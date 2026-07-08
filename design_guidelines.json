@@ -1,0 +1,143 @@
+{
+  "theme": "dark",
+  "typography": {
+    "headings": {
+      "fontFamily": "'Bebas Neue', sans-serif",
+      "style": "uppercase, tight-tracking (tracking-tighter), font-normal or font-bold depending on scale",
+      "usage": "Use for all Hero headings, section titles, card titles, stats, and numbers. Gives an imposing, premium, commercial feel."
+    },
+    "body": {
+      "fontFamily": "'DM Sans', sans-serif",
+      "style": "clean, modern sans-serif. loose leading for paragraphs (leading-relaxed), tight for UI elements",
+      "usage": "Use for all descriptions, labels, forms, tables, buttons, and navigation."
+    },
+    "scale": {
+      "hero": "text-6xl md:text-8xl lg:text-[10vw]",
+      "section_title": "text-4xl md:text-5xl",
+      "card_title": "text-2xl",
+      "body_large": "text-lg",
+      "body_base": "text-base",
+      "caption": "text-sm uppercase tracking-[0.2em]"
+    }
+  },
+  "colors": {
+    "archetype": "THE PERFORMANCE PRO / LUXURY HYBRID",
+    "base": {
+      "background": "#0A0A0A",
+      "surface": "#141414",
+      "surface_elevated": "#1A1A1A",
+      "border": "#2A2A2A"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#71717A"
+    },
+    "accents": {
+      "primary": "#D4AF37", 
+      "primary_hover": "#B3922E",
+      "primary_muted": "rgba(212, 175, 55, 0.1)",
+      "alert": "#EF4444",
+      "success": "#22C55E",
+      "warning": "#F97316"
+    },
+    "rules": [
+      "No pure #000000. Use #0A0A0A for deepest depth.",
+      "Gradients should be used sparingly, mostly as subtle background glows (radial-gradient) behind hero or key stats.",
+      "Primary CTA buttons must be Gold (#D4AF37) with black (#0A0A0A) text.",
+      "Interactive states must always increase contrast (e.g. hover:bg-[#B3922E])."
+    ]
+  },
+  "visual_enhancers": {
+    "shadows": "Use subtle colored glows instead of drop-shadows on dark backgrounds. e.g. shadow-[0_0_20px_rgba(212,175,55,0.15)] for premium cards.",
+    "borders": "1px solid #2A2A2A. Use border-white/5 for glass effects.",
+    "surfaces": "Glassmorphism for sticky navs and mobile bottom bars: bg-[#0A0A0A]/80 backdrop-blur-xl border-b border-white/10.",
+    "textures": "Add a subtle noise/grain overlay (opacity 0.03) to the main background to prevent it from feeling like 'flat digital void'."
+  },
+  "component_rules": {
+    "buttons": "Pill-shaped (rounded-full) or sharp rectangles (rounded-md). Since Bebas Neue is sharp, let's use slightly rounded (rounded-md) to match the industrial/logistics vibe. Gold background for primary, transparent with 1px border for secondary.",
+    "cards": "Subtle borders (border-white/10), dark background (#141414). Groupage cards need to feel like 'tickets' or 'cargo manifests' - use dashed lines or perforated edges as a creative detail.",
+    "forms": "Inputs must have dark bg (bg-[#0A0A0A]), visible border (border-white/20), and glow gold on focus (focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37]).",
+    "status_badges": "Must use the accent colors. Validated = Green bg with 10% opacity + Green text. Pending = Orange. Alert/Failed = Red. Premium/Completed = Gold.",
+    "tables": "Use for Admin/Member dashboard. Dense, clean lines, hover effects on rows (hover:bg-white/5).",
+    "timeline": "For logistics timeline, use vertical line with glowing dots. Gold dot for current status, green for past, grey for future."
+  },
+  "grids_and_layouts": {
+    "spacing": "Generous spacing. p-6 or p-8 inside cards. gap-6 to gap-8 for grids.",
+    "landing_page": "Bento grids for 'How it works' and 'Savings Comparator'. Asymmetrical layouts to build tension. Large typography.",
+    "dashboard": "High-density Grid. Strict hierarchy. Sidebar + Header + Main Content.",
+    "mobile_first": "Ensure all tables have horizontal scroll on mobile. Bottom navigation bar for mobile app feel. Stacked cards for groupages."
+  },
+  "motion": {
+    "hover": "Cards slightly lift (-translate-y-1) and border glows.",
+    "page_transitions": "Fade and slight slide up (y: 20 -> 0) using framer-motion.",
+    "marquee": "Use a slow marquee (react-fast-marquee) for displaying active groupages or trusted transitaire logos.",
+    "micro_interactions": "Icon rotation or scale on button hover."
+  },
+  "accessibility": {
+    "contrast": "Ensure all text against dark background passes APCA.",
+    "focus": "Visible focus rings on all interactive elements.",
+    "aria": "Use aria-labels for icon-only buttons (like chat or document viewer).",
+    "testing": "Add data-testid to all buttons, links, inputs, and major sections."
+  },
+  "media": {
+    "icons": "Use lucide-react for standard icons.",
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1758519291531-e96279895745?crop=entropy&cs=srgb&fm=jpg",
+        "category": "Hero / Onboarding",
+        "description": "Modern African businessman using phone, smiling. Great for mobile onboarding or success state."
+      },
+      {
+        "url": "https://images.pexels.com/photos/36547342/pexels-photo-36547342.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "Testimonials / Persona",
+        "description": "Local African merchant sitting, authentic feel. Good for target audience representation."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1735047974891-df59713d8192?crop=entropy&cs=srgb&fm=jpg",
+        "category": "Logistics / Groupage",
+        "description": "Close up of cargo containers. Use for groupage background or category image."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1683331817198-358e0a1be916?crop=entropy&cs=srgb&fm=jpg",
+        "category": "Logistics / Shipping",
+        "description": "Large body of water with cranes. Good for background textures or timeline illustration."
+      },
+      {
+        "url": "https://images.pexels.com/photos/6462829/pexels-photo-6462829.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "Hero / Shipping",
+        "description": "Bustling industrial port with cranes. Perfect for main landing page hero background with a dark overlay."
+      },
+      {
+        "url": "https://images.pexels.com/photos/36169774/pexels-photo-36169774.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "category": "Products / Electronics",
+        "description": "Close-up electronic microchips. Use as thumbnail for an electronics groupage."
+      }
+    ]
+  },
+  "3d_libraries": {
+    "recommendation": "Use framer-motion for UI transitions. If visualizing the China->Africa route on the landing page, consider react-simple-maps or a lightweight SVG path animation (tracing beam) rather than full 3D to keep performance high on mobile networks.",
+    "libraries": ["framer-motion", "lucide-react", "clsx", "tailwind-merge"]
+  },
+  "instructions_to_main_agent": [
+    "You are building 'SilkRoute', a B2B group-buying SaaS platform.",
+    "Start by setting up the Tailwind config with the specified colors (obsidian, gold, alert, success).",
+    "Import Bebas Neue and DM Sans from Google Fonts in the index.html or global CSS.",
+    "Build the UI Mobile-First. This is critical as the target audience uses mobile devices heavily.",
+    "Use Shadcn components for complex logic (Select, Dialog, Form), but heavily customize their styling (remove white backgrounds, use #141414, change borders to #2A2A2A).",
+    "Do NOT use generic SaaS blue anywhere. The primary interactive color is Gold (#D4AF37).",
+    "Ensure the Savings Comparator is a highly visual, interactive card showing 'Local vs SilkRoute' price.",
+    "For the Groupage Cards, make them feel like logistics manifests. Include a progress bar for 'volume filled' and a countdown timer.",
+    "The App must have a language toggle (FR/EN) in the header or sidebar.",
+    "Use Sonner for toast notifications (alerts, success messages)."
+  ],
+  "universal_guidelines": [
+    "Never center-align paragraphs. Left align for readability.",
+    "Do not use transparent backgrounds for dropdowns, navs, or modals. Always use a solid dark color or heavy blur with high opacity.",
+    "All interactive elements MUST include a data-testid attribute.",
+    "Use 2-3x more padding than standard. If you think p-4 is enough, use p-6 or p-8.",
+    "Avoid AI slop: no generic gradients, no overused emojis in UI, no floating blobs. Keep it industrial, sharp, premium.",
+    "Components MUST use named exports, Pages MUST use default exports.",
+    "Avoid applying 'transition: all' to prevent breaking transforms. Be specific (e.g., transition-colors, transition-transform)."
+  ]
+}
