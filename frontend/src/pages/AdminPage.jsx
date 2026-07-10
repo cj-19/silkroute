@@ -222,6 +222,7 @@ const AdminGroupages = () => {
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchGroupages();
   }, [token]);
@@ -759,6 +760,7 @@ const AdminKYC = () => {
   const [queue, setQueue] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchQueue();
   }, [token]);
