@@ -122,8 +122,11 @@ const GroupageCard = ({ groupage, index, getLocalizedText }) => {
   const deadline = new Date(groupage.deadline);
   const now = new Date();
   const daysLeft = Math.max(0, Math.ceil((deadline - now) / (1000 * 60 * 60 * 24)));
-  const spotsLeft = groupage.max_members - groupage.current_members;
-  const progress = (groupage.current_members / groupage.min_members) * 100;
+  // La jauge suit la quantite reservee par rapport a la quantite cible de la
+  // commande groupee (pas le nombre de personnes)
+  const reserved = groupage.current_quantity_reserved || 0;
+  const unitsLeft = Math.max(0, (groupage.total_quantity || 0) - reserved);
+  const progress = groupage.total_quantity ? (reserved / groupage.total_quantity) * 100 : 0;
 
   const statusColors = {
     open: 'badge-success',
@@ -194,13 +197,13 @@ const GroupageCard = ({ groupage, index, getLocalizedText }) => {
         <div className="mb-4">
           <div className="flex justify-between text-sm mb-2">
             <span className="text-[#A1A1AA]">
-              {groupage.current_members}/{groupage.min_members} {t('groupages.minMembers')}
+              {reserved}/{groupage.total_quantity} {i18n.language === 'fr' ? 'unités réservées' : 'units reserved'}
             </span>
             <span className="text-[#D4AF37]">{Math.round(progress)}%</span>
           </div>
           <div className="progress-bar">
-            <div 
-              className="progress-bar-fill" 
+            <div
+              className="progress-bar-fill"
               style={{ width: `${Math.min(progress, 100)}%` }}
             />
           </div>
@@ -214,7 +217,7 @@ const GroupageCard = ({ groupage, index, getLocalizedText }) => {
           </div>
           <div className="flex items-center gap-1 text-[#22C55E]">
             <Users className="w-4 h-4" />
-            <span>{spotsLeft} {t('groupages.spotsLeft')}</span>
+            <span>{unitsLeft} {i18n.language === 'fr' ? 'unités restantes' : 'units left'}</span>
           </div>
         </div>
 

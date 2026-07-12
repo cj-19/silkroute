@@ -1560,6 +1560,11 @@ async def get_cloudinary_signature(folder: str = "uploads", user: dict = Depends
 # GROUPAGE ROUTES
 # ========================
 
+# Champs sensibles jamais exposes dans les reponses publiques de groupage :
+# les documents fournisseur revelent l'identite legale du fournisseur (risque de
+# contournement de la plateforme et fuite d'insights vers les concurrents).
+PUBLIC_GROUPAGE_PROJECTION = {"_id": 0, "supplier_documents": 0, "supplier_extra_documents": 0}
+
 @api_router.get("/groupages")
 async def list_groupages(status: Optional[str] = None, category_id: Optional[str] = None, featured: bool = False, limit: int = 20):
     query = {}
@@ -1569,26 +1574,26 @@ async def list_groupages(status: Optional[str] = None, category_id: Optional[str
         query["product_category_id"] = category_id
     if featured:
         query["is_featured"] = True
-    
-    groupages = await db.groupages.find(query, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-    
+
+    groupages = await db.groupages.find(query, PUBLIC_GROUPAGE_PROJECTION).sort("created_at", -1).limit(limit).to_list(limit)
+
     for g in groupages:
         for field in ["created_at", "deadline", "estimated_arrival"]:
             if isinstance(g.get(field), str):
                 g[field] = datetime.fromisoformat(g[field])
-    
+
     return groupages
 
 @api_router.get("/groupages/{groupage_id}")
 async def get_groupage(groupage_id: str):
-    groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0})
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id}, PUBLIC_GROUPAGE_PROJECTION)
     if not groupage:
         raise HTTPException(status_code=404, detail="Groupage not found")
-    
+
     for field in ["created_at", "deadline", "estimated_arrival"]:
         if isinstance(groupage.get(field), str):
             groupage[field] = datetime.fromisoformat(groupage[field])
-    
+
     return groupage
 
 @api_router.get("/groupages/{groupage_id}/pricing")
@@ -1604,22 +1609,26 @@ async def get_groupage_pricing(groupage_id: str, quantity: int = 1, user: dict =
 
 @api_router.get("/groupages/{groupage_id}/documents")
 async def get_groupage_documents(groupage_id: str, user: dict = Depends(get_current_user)):
-    """Récupère les documents logistiques d'un groupage"""
+    """Documents d'un groupage. Les documents logistiques (BL, packing list...)
+    sont visibles par les membres ; les documents fournisseur (licence commerciale,
+    identite legale du fournisseur) sont reserves a l'admin pour empecher le
+    contournement de la plateforme."""
     groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0})
     if not groupage:
         raise HTTPException(status_code=404, detail="Groupage not found")
-    
-    # Vérifier si l'utilisateur est membre
+
+    is_admin = user.get("role") == "admin"
     membership = await db.groupage_members.find_one({
         "groupage_id": groupage_id,
         "user_id": user["user_id"]
     })
-    
-    if not membership and user.get("role") != "admin":
+
+    if not membership and not is_admin:
         raise HTTPException(status_code=403, detail="You must be a member to view documents")
-    
+
     return {
-        "supplier_documents": groupage.get("supplier_documents", {}),
+        "supplier_documents": groupage.get("supplier_documents", {}) if is_admin else {},
+        "supplier_documents_validated": groupage.get("supplier_documents_validated", False),
         "logistics_documents": groupage.get("logistics_documents", [])
     }
 
@@ -1736,8 +1745,8 @@ async def get_groupage_messages(groupage_id: str, limit: int = 50, user: dict = 
 async def get_user_groupages(user: dict = Depends(get_current_user)):
     memberships = await db.groupage_members.find({"user_id": user["user_id"]}, {"_id": 0}).to_list(100)
     groupage_ids = [m["groupage_id"] for m in memberships]
-    
-    groupages = await db.groupages.find({"groupage_id": {"$in": groupage_ids}}, {"_id": 0}).to_list(100)
+
+    groupages = await db.groupages.find({"groupage_id": {"$in": groupage_ids}}, PUBLIC_GROUPAGE_PROJECTION).to_list(100)
     
     for g in groupages:
         for field in ["created_at", "deadline", "estimated_arrival"]:

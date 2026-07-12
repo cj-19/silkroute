@@ -263,6 +263,20 @@ const AdminGroupages = () => {
     }
   }, [location.state]);
 
+  // Raccourci "Modifier (admin)" depuis la page publique d'un groupage :
+  // ouvre directement le modal d'edition du groupage demande.
+  useEffect(() => {
+    const targetId = location.state?.editGroupageId;
+    if (targetId && groupages.length > 0) {
+      const target = groupages.find(g => g.groupage_id === targetId);
+      if (target) {
+        setEditingGroupage(target);
+        window.history.replaceState({}, '');
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupages]);
+
   const fetchGroupages = async () => {
     try {
       const response = await api.get('/groupages');

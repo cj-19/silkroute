@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
@@ -248,9 +248,12 @@ const GroupageDetailPage = () => {
 
   const deadline = new Date(groupage.deadline);
   const daysLeft = Math.max(0, Math.ceil((deadline - new Date()) / (1000 * 60 * 60 * 24)));
-  const progress = (groupage.current_members / groupage.min_members) * 100;
   const isMember = members.some(m => m.user_id === user?.user_id);
   const remainingQuantity = groupage.total_quantity - (groupage.current_quantity_reserved || 0);
+  // La jauge suit la quantite reservee par rapport a la quantite cible
+  const progress = groupage.total_quantity
+    ? ((groupage.current_quantity_reserved || 0) / groupage.total_quantity) * 100
+    : 0;
 
   return (
     <Layout>
@@ -292,9 +295,21 @@ const GroupageDetailPage = () => {
 
             {/* Quick Info Card */}
             <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6">
-              <span className="badge-success px-3 py-1 rounded-full text-xs font-medium inline-block mb-4">
-                {t(`groupages.status.${groupage.status}`)}
-              </span>
+              <div className="flex items-center justify-between mb-4">
+                <span className="badge-success px-3 py-1 rounded-full text-xs font-medium inline-block">
+                  {t(`groupages.status.${groupage.status}`)}
+                </span>
+                {user?.role === 'admin' && (
+                  <Link
+                    to="/admin/groupages"
+                    state={{ editGroupageId: groupage.groupage_id }}
+                    className="btn-outline px-3 py-1 rounded-md text-xs"
+                    data-testid="admin-edit-shortcut"
+                  >
+                    ✏️ {i18n.language === 'fr' ? 'Modifier (admin)' : 'Edit (admin)'}
+                  </Link>
+                )}
+              </div>
               
               <h1 className="font-['Bebas_Neue'] text-3xl mb-2">
                 {getLocalizedText(groupage, 'title')}
@@ -308,13 +323,13 @@ const GroupageDetailPage = () => {
               <div className="mb-6">
                 <div className="flex justify-between text-sm mb-2">
                   <span className="text-[#A1A1AA]">
-                    {groupage.current_members}/{groupage.min_members} {t('groupages.minMembers')}
+                    {groupage.current_quantity_reserved || 0}/{groupage.total_quantity} {i18n.language === 'fr' ? 'unités réservées' : 'units reserved'}
                   </span>
                   <span className="text-[#D4AF37]">{Math.round(progress)}%</span>
                 </div>
                 <div className="progress-bar">
-                  <div 
-                    className="progress-bar-fill" 
+                  <div
+                    className="progress-bar-fill"
                     style={{ width: `${Math.min(progress, 100)}%` }}
                   />
                 </div>
@@ -763,32 +778,43 @@ const GroupageDetailPage = () => {
                     </div>
                   ) : documents ? (
                     <div className="space-y-6">
-                      {/* Supplier Documents */}
+                      {/* Documents fournisseur : fichiers visibles par l'admin seul
+                          (identite legale du fournisseur) ; les membres voient un
+                          gage de verification, pas les documents eux-memes. */}
                       <div>
                         <h4 className="font-medium mb-4 flex items-center gap-2">
                           <Shield className="w-5 h-5 text-[#D4AF37]" />
                           {i18n.language === 'fr' ? 'Documents Fournisseur' : 'Supplier Documents'}
                         </h4>
-                        <div className="grid md:grid-cols-2 gap-4">
-                          {documents.supplier_documents?.business_license_url && (
+                        {documents.supplier_documents?.business_license_url ? (
+                          <div className="grid md:grid-cols-2 gap-4">
                             <DocumentLink
                               label={i18n.language === 'fr' ? 'Licence commerciale' : 'Business License'}
                               url={documents.supplier_documents.business_license_url}
                             />
-                          )}
-                          {documents.supplier_documents?.export_license_url && (
-                            <DocumentLink
-                              label={i18n.language === 'fr' ? "Licence d'export" : 'Export License'}
-                              url={documents.supplier_documents.export_license_url}
-                            />
-                          )}
-                          {documents.supplier_documents?.factory_audit_url && (
-                            <DocumentLink
-                              label={i18n.language === 'fr' ? 'Audit usine' : 'Factory Audit'}
-                              url={documents.supplier_documents.factory_audit_url}
-                            />
-                          )}
-                        </div>
+                            {documents.supplier_documents?.export_license_url && (
+                              <DocumentLink
+                                label={i18n.language === 'fr' ? "Licence d'export" : 'Export License'}
+                                url={documents.supplier_documents.export_license_url}
+                              />
+                            )}
+                            {documents.supplier_documents?.factory_audit_url && (
+                              <DocumentLink
+                                label={i18n.language === 'fr' ? 'Audit usine' : 'Factory Audit'}
+                                url={documents.supplier_documents.factory_audit_url}
+                              />
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-3 bg-[#22C55E]/5 border border-[#22C55E]/20 rounded-md px-4 py-3">
+                            <CheckCircle className="w-5 h-5 text-[#22C55E] shrink-0" />
+                            <p className="text-sm text-[#A1A1AA]">
+                              {i18n.language === 'fr'
+                                ? 'Licence commerciale et documents du fournisseur vérifiés et conservés par SilkRoute.'
+                                : 'Supplier business license and documents verified and kept on file by SilkRoute.'}
+                            </p>
+                          </div>
+                        )}
                       </div>
 
                       {/* Logistics Documents */}
