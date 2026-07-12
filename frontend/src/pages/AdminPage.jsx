@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
+import ImageDropZone from '@/components/ImageDropZone';
 
 const AdminPage = () => {
   const location = useLocation();
@@ -757,13 +758,19 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
 
           <div>
             <label className="block text-sm text-[#A1A1AA] mb-2">
-              {i18n.language === 'fr' ? "Image produit (URL, optionnel)" : 'Product image (URL, optional)'}
+              {i18n.language === 'fr' ? 'Image produit (optionnel)' : 'Product image (optional)'}
             </label>
-            <div className="flex gap-2">
+            <ImageDropZone
+              value={formData.product_image_url}
+              onChange={(url) => setFormData(prev => ({ ...prev, product_image_url: url }))}
+              fr={i18n.language === 'fr'}
+            />
+            <div className="flex gap-2 mt-2">
               <input
                 type="url"
                 value={formData.product_image_url}
                 onChange={(e) => setFormData({...formData, product_image_url: e.target.value})}
+                placeholder={i18n.language === 'fr' ? "...ou collez l'URL d'une image" : '...or paste an image URL'}
                 className="input-dark flex-1 px-4 py-2 rounded-md"
               />
               <button
@@ -778,15 +785,6 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
                 {i18n.language === 'fr' ? 'Depuis le lien' : 'From link'}
               </button>
             </div>
-            {formData.product_image_url && (
-              <img
-                src={formData.product_image_url}
-                alt="aperçu produit"
-                className="mt-2 h-24 rounded-md object-cover border border-[#2A2A2A]"
-                onError={(e) => { e.target.style.display = 'none'; }}
-                onLoad={(e) => { e.target.style.display = ''; }}
-              />
-            )}
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -2139,25 +2137,15 @@ const EditImageModal = ({ groupage, fr, onClose, onSaved }) => {
         </div>
         <p className="text-sm text-[#71717A] mb-4 truncate">{groupage.title}</p>
 
-        {imageUrl ? (
-          <img
-            src={imageUrl}
-            alt="aperçu produit"
-            className="w-full h-40 object-cover rounded-md border border-[#2A2A2A] mb-4"
-            onError={(e) => { e.target.style.opacity = 0.3; }}
-            onLoad={(e) => { e.target.style.opacity = 1; }}
-          />
-        ) : (
-          <div className="w-full h-40 rounded-md border border-dashed border-[#2A2A2A] mb-4 flex items-center justify-center text-[#71717A] text-sm">
-            {fr ? 'Aucune image' : 'No image'}
-          </div>
-        )}
+        <div className="mb-4">
+          <ImageDropZone value={imageUrl} onChange={setImageUrl} fr={fr} />
+        </div>
 
         <input
           type="url"
           value={imageUrl}
           onChange={(e) => setImageUrl(e.target.value)}
-          placeholder={fr ? "URL de l'image..." : 'Image URL...'}
+          placeholder={fr ? "...ou collez l'URL d'une image" : '...or paste an image URL'}
           className="input-dark w-full px-4 py-2 rounded-md mb-3"
           data-testid="image-url-input"
         />
