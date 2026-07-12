@@ -1429,7 +1429,9 @@ async def root():
 fastapi_app.include_router(api_router)
 
 _cors_origins_env = os.environ.get('CORS_ORIGINS', '')
-CORS_ORIGINS = [o.strip() for o in _cors_origins_env.split(',') if o.strip()]
+# .rstrip('/') : le header Origin du navigateur n'a jamais de slash final, donc on
+# normalise pour eviter qu'un "https://site.app/" colle dans la config casse le CORS.
+CORS_ORIGINS = [o.strip().rstrip('/') for o in _cors_origins_env.split(',') if o.strip()]
 if not CORS_ORIGINS:
     logger.warning(
         "CORS_ORIGINS is not set - no cross-origin browser requests will be allowed. "
