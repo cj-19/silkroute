@@ -19,6 +19,8 @@ import ChangePasswordPage from "@/pages/ChangePasswordPage";
 import PartnerPage from "@/pages/PartnerPage";
 import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
 import ResetPasswordPage from "@/pages/ResetPasswordPage";
+import VerifyEmailPage from "@/pages/VerifyEmailPage";
+import SettingsPage from "@/pages/SettingsPage";
 
 // Protected Route Component
 const ProtectedRoute = ({ children, adminOnly = false, roles = null }) => {
@@ -61,6 +63,13 @@ const AppRouter = () => {
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+
+      <Route path="/settings" element={
+        <ProtectedRoute>
+          <SettingsPage />
+        </ProtectedRoute>
+      } />
       <Route path="/groupages" element={<GroupagesPage />} />
       <Route path="/groupages/:id" element={<GroupageDetailPage />} />
       <Route path="/payment/success" element={<PaymentSuccessPage />} />

@@ -81,8 +81,16 @@ export const Navbar = () => {
             {/* Auth Buttons */}
             {isAuthenticated ? (
               <div className="hidden md:flex items-center gap-3">
-                <span className="text-sm text-[#A1A1AA]">{user?.name}</span>
-                <button 
+                <Link
+                  to="/settings"
+                  className="flex items-center gap-2 text-sm text-[#A1A1AA] hover:text-white transition-colors"
+                  data-testid="nav-settings"
+                  title="Mon compte"
+                >
+                  <User className="w-4 h-4" />
+                  {user?.name}
+                </Link>
+                <button
                   onClick={handleLogout}
                   className="p-2 rounded-md hover:bg-[#1A1A1A] transition-colors"
                   data-testid="logout-btn"
@@ -162,13 +170,23 @@ export const Navbar = () => {
 
             <div className="border-t border-[#2A2A2A] pt-3 mt-3">
               {isAuthenticated ? (
-                <button 
-                  onClick={() => { handleLogout(); setMobileMenuOpen(false); }}
-                  className="flex items-center gap-3 py-2 text-[#EF4444]"
-                >
-                  <LogOut className="w-5 h-5" />
-                  {t('nav.logout')}
-                </button>
+                <>
+                  <Link
+                    to="/settings"
+                    className="block py-2 text-[#A1A1AA] hover:text-white"
+                    onClick={() => setMobileMenuOpen(false)}
+                  >
+                    <User className="w-5 h-5 inline mr-3" />
+                    {t('nav.myAccount', 'Mon compte')}
+                  </Link>
+                  <button
+                    onClick={() => { handleLogout(); setMobileMenuOpen(false); }}
+                    className="flex items-center gap-3 py-2 text-[#EF4444]"
+                  >
+                    <LogOut className="w-5 h-5" />
+                    {t('nav.logout')}
+                  </button>
+                </>
               ) : (
                 <div className="space-y-2">
                   <Link 

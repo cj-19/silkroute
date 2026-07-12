@@ -47,6 +47,21 @@ const DashboardPage = () => {
     <Layout>
       <div className="min-h-screen bg-[#0A0A0A] pt-8 pb-16" data-testid="dashboard-page">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Banniere email non verifie (uniquement pour les comptes crees avec la verification) */}
+          {user?.email_verified === false && (
+            <div className="bg-[#F97316]/10 border border-[#F97316]/30 rounded-lg p-4 mb-6 flex flex-col sm:flex-row sm:items-center gap-3" data-testid="verify-email-banner">
+              <AlertCircle className="w-5 h-5 text-[#F97316] shrink-0" />
+              <p className="text-sm text-[#F97316] flex-1">
+                {i18n.language === 'fr'
+                  ? "Votre adresse email n'est pas vérifiée. Consultez l'email reçu à l'inscription, ou renvoyez-le depuis votre compte."
+                  : 'Your email address is not verified. Check the email received at signup, or resend it from your account.'}
+              </p>
+              <Link to="/settings" className="btn-outline px-4 py-2 rounded-md text-sm whitespace-nowrap">
+                {i18n.language === 'fr' ? 'Mon compte' : 'My account'}
+              </Link>
+            </div>
+          )}
+
           {/* Header */}
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
             <div>

@@ -47,7 +47,9 @@ const RegisterPage = () => {
         name: formData.name,
         language: formData.language
       });
-      toast.success(i18n.language === 'fr' ? 'Compte créé avec succès!' : 'Account created successfully!');
+      toast.success(i18n.language === 'fr'
+        ? 'Compte créé! Un email de vérification vous a été envoyé.'
+        : 'Account created! A verification email has been sent to you.');
       navigate('/onboarding');
     } catch (error) {
       console.error('Register error:', error);

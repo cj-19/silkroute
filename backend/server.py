@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Body
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -581,11 +581,20 @@ async def register(request: Request, user_data: UserCreate, response: Response):
         "kyc_documents": {},
         "mobile_money": {},
         "cgu_accepted": False,
+        "email_verified": False,
         "buyer_profile": user_data.buyer_profile,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
 
     await db.users.insert_one(user_doc)
+
+    # Envoi du lien de verification d'email, sans bloquer l'inscription si
+    # l'envoi echoue (Resend pas encore configure, panne, etc.)
+    try:
+        await create_and_send_verification(user_id, user_data.email)
+    except Exception as e:
+        logger.error(f"Verification email failed for {user_id}: {e}")
+
     token = create_token(user_id)
     set_auth_cookie(response, token)
     user_response = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
@@ -625,6 +634,9 @@ async def get_me(user: dict = Depends(get_current_user)):
         "buyer_profile": user.get("buyer_profile"),
         "entity_id": user.get("entity_id"),
         "must_change_password": user.get("must_change_password", False),
+        # None pour les comptes crees avant la verification d'email (pas de banniere),
+        # False pour les nouveaux comptes non verifies, True une fois verifie.
+        "email_verified": user.get("email_verified"),
         # Jeton de courte duree expose au JS uniquement pour l'authentification du
         # websocket (Socket.IO ne peut pas lire le cookie httpOnly dans son handshake).
         # Ne remplace pas le cookie comme mecanisme d'authentification principal.
@@ -899,6 +911,7 @@ async def create_partner_account(account: PartnerAccountCreate, user: dict = Dep
         "role": account.role,
         "entity_id": account.entity_id,
         "must_change_password": True,
+        "email_verified": True,  # compte cree et transmis par l'admin
         "kyc_status": "validated",  # les partenaires ne passent pas par le KYC membre
         "kyc_documents": {},
         "mobile_money": {},
@@ -965,24 +978,12 @@ def _frontend_base_url() -> str:
     origins = [o.strip().rstrip("/") for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
     return origins[0] if origins else ""
 
-async def send_reset_email(to_email: str, reset_link: str) -> bool:
+async def send_email(to_email: str, subject: str, html: str) -> bool:
+    """Envoi d'un email transactionnel via Resend. Best-effort : les echecs sont
+    logges mais ne font jamais echouer la requete appelante."""
     if not RESEND_API_KEY:
-        logger.error("RESEND_API_KEY is not configured - cannot send password reset email")
+        logger.error("RESEND_API_KEY is not configured - cannot send email")
         return False
-
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
-      <h2 style="color:#0A0A0A">SilkRoute — Réinitialisation du mot de passe</h2>
-      <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
-      <p style="margin:24px 0">
-        <a href="{reset_link}" style="background:#D4AF37;color:#0A0A0A;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold">
-          Choisir un nouveau mot de passe
-        </a>
-      </p>
-      <p style="color:#666;font-size:13px">Ce lien expire dans {RESET_TOKEN_TTL_MINUTES} minutes.
-      Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email — votre mot de passe restera inchangé.</p>
-    </div>
-    """
     try:
         async with httpx.AsyncClient() as http_client:
             response = await http_client.post(
@@ -991,7 +992,7 @@ async def send_reset_email(to_email: str, reset_link: str) -> bool:
                 json={
                     "from": RESEND_FROM,
                     "to": [to_email],
-                    "subject": "SilkRoute — Réinitialisation de votre mot de passe",
+                    "subject": subject,
                     "html": html
                 },
                 timeout=15
@@ -1001,8 +1002,62 @@ async def send_reset_email(to_email: str, reset_link: str) -> bool:
             return False
         return True
     except Exception as e:
-        logger.error(f"Failed to send reset email: {e}")
+        logger.error(f"Failed to send email: {e}")
         return False
+
+def _email_button_html(title: str, body: str, button_label: str, link: str, footer: str) -> str:
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
+      <h2 style="color:#0A0A0A">SilkRoute — {title}</h2>
+      <p>{body}</p>
+      <p style="margin:24px 0">
+        <a href="{link}" style="background:#D4AF37;color:#0A0A0A;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold">
+          {button_label}
+        </a>
+      </p>
+      <p style="color:#666;font-size:13px">{footer}</p>
+    </div>
+    """
+
+async def send_reset_email(to_email: str, reset_link: str) -> bool:
+    return await send_email(
+        to_email,
+        "SilkRoute — Réinitialisation de votre mot de passe",
+        _email_button_html(
+            "Réinitialisation du mot de passe",
+            "Vous avez demandé la réinitialisation de votre mot de passe.",
+            "Choisir un nouveau mot de passe",
+            reset_link,
+            f"Ce lien expire dans {RESET_TOKEN_TTL_MINUTES} minutes. Si vous n'êtes pas à l'origine "
+            "de cette demande, ignorez simplement cet email — votre mot de passe restera inchangé."
+        )
+    )
+
+VERIFY_TOKEN_TTL_HOURS = 48
+
+async def create_and_send_verification(user_id: str, email: str) -> bool:
+    """Genere un jeton de verification d'email (hash en base) et envoie le lien."""
+    token = secrets.token_urlsafe(32)
+    await db.email_verifications.insert_one({
+        "user_id": user_id,
+        "token_hash": hash_password(token),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=VERIFY_TOKEN_TTL_HOURS)).isoformat(),
+        "used": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+    verify_link = f"{_frontend_base_url()}/verify-email?token={token}"
+    return await send_email(
+        email,
+        "SilkRoute — Vérifiez votre adresse email",
+        _email_button_html(
+            "Vérification de votre email",
+            "Bienvenue sur SilkRoute ! Cliquez sur le bouton ci-dessous pour confirmer votre adresse email.",
+            "Vérifier mon email",
+            verify_link,
+            f"Ce lien expire dans {VERIFY_TOKEN_TTL_HOURS} heures. Si vous n'avez pas créé de compte "
+            "SilkRoute, ignorez cet email."
+        )
+    )
 
 @api_router.post("/auth/forgot-password")
 @limiter.limit("5/hour")
@@ -1032,6 +1087,50 @@ async def forgot_password(request: Request, payload: ForgotPassword):
         logger.error(f"Reset email could not be sent to user {user['user_id']}")
 
     return generic_response
+
+@api_router.post("/auth/verify-email")
+@limiter.limit("20/hour")
+async def verify_email(request: Request, payload: dict = Body(...)):
+    """Valide le jeton recu par email a l'inscription et marque l'email verifie."""
+    token = payload.get("token", "")
+    if not token:
+        raise HTTPException(status_code=400, detail="Token manquant")
+
+    now = datetime.now(timezone.utc)
+    candidates = await db.email_verifications.find({"used": False}).sort("created_at", -1).to_list(200)
+
+    matched = None
+    for candidate in candidates:
+        expires_at = datetime.fromisoformat(candidate["expires_at"])
+        if expires_at < now:
+            continue
+        if verify_password(token, candidate["token_hash"]):
+            matched = candidate
+            break
+
+    if not matched:
+        raise HTTPException(status_code=400, detail="Lien invalide ou expiré. Redemandez un email de vérification depuis votre profil.")
+
+    await db.users.update_one(
+        {"user_id": matched["user_id"]},
+        {"$set": {"email_verified": True, "email_verified_at": now.isoformat()}}
+    )
+    await db.email_verifications.update_one(
+        {"_id": matched["_id"]},
+        {"$set": {"used": True, "used_at": now.isoformat()}}
+    )
+    return {"message": "Email vérifié. Merci !"}
+
+@api_router.post("/auth/resend-verification")
+@limiter.limit("3/hour")
+async def resend_verification(request: Request, user: dict = Depends(get_current_user)):
+    """Renvoie l'email de verification a l'utilisateur connecte."""
+    if user.get("email_verified"):
+        return {"message": "Email déjà vérifié"}
+    sent = await create_and_send_verification(user["user_id"], user["email"])
+    if not sent:
+        raise HTTPException(status_code=502, detail="L'email n'a pas pu être envoyé. Réessayez plus tard.")
+    return {"message": "Email de vérification renvoyé"}
 
 @api_router.post("/auth/reset-password")
 @limiter.limit("10/hour")
