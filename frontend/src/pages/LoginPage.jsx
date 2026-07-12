@@ -23,8 +23,14 @@ const LoginPage = () => {
     try {
       const user = await login(email, password);
       toast.success(t('auth.login') + ' - OK');
-      
-      if (!user.cgu_accepted || user.kyc_status === 'pending') {
+
+      if (user.role === 'transitaire' || user.role === 'supplier') {
+        // Les partenaires ont leur propre espace (le changement de mot de passe
+        // provisoire est force par ProtectedRoute si necessaire).
+        navigate('/partenaire');
+      } else if (user.role === 'admin') {
+        navigate('/admin');
+      } else if (!user.cgu_accepted || user.kyc_status === 'pending') {
         navigate('/onboarding');
       } else {
         navigate('/dashboard');

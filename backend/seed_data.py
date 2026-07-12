@@ -40,17 +40,59 @@ CATEGORIES = [
     {"name": "Menager", "name_en": "Household"},
 ]
 
-# A adapter avec les vraies coordonnees de ton transitaire pilote avant de lancer le script.
+# Fiche du transitaire pilote (tarifs de l'affiche TATO CARGO).
+# city / country / license_number a completer avec les vraies infos administratives.
 TRANSITAIRES = [
     {
-        "name": "A completer",
+        "name": "TATO CARGO",
         "city": "A completer",
-        "country": "A completer",
+        "country": "Chine",
         "license_number": "A completer",
-        "contact_phone": None,
+        "contact_phone": "+86 185 8859 5637",
         "contact_email": None,
-        "shipping_price_per_kg_cny": 45,
-        "estimated_days": 30,
+        "website": "https://www.tatocargo.com",
+        "shipping_options": [
+            {
+                "option_id": "opt_air_normal",
+                "label": "Aerien normal",
+                "mode": "air",
+                "price_fcfa": 8997,
+                "unit": "kg",
+                "eta_min_days": 7,
+                "eta_max_days": 15,
+                "is_active": True,
+            },
+            {
+                "option_id": "opt_air_sensible",
+                "label": "Aerien sensible",
+                "mode": "air",
+                "price_fcfa": 9997,
+                "unit": "kg",
+                "eta_min_days": 15,
+                "eta_max_days": 21,
+                "is_active": True,
+            },
+            {
+                "option_id": "opt_air_express",
+                "label": "Aerien express",
+                "mode": "air",
+                "price_fcfa": 10997,
+                "unit": "kg",
+                "eta_min_days": 2,
+                "eta_max_days": 3,
+                "is_active": True,
+            },
+            {
+                "option_id": "opt_maritime",
+                "label": "Maritime",
+                "mode": "sea",
+                "price_fcfa": 349500,
+                "unit": "cbm",
+                "eta_min_days": 45,
+                "eta_max_days": 60,
+                "is_active": True,
+            },
+        ],
         "is_active": True,
     }
 ]

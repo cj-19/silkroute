@@ -4,7 +4,8 @@ import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
-  Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb
+  Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
+  Truck, Factory, KeyRound, Pencil, Copy, RefreshCw
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -18,7 +19,10 @@ const AdminPage = () => {
     { path: '/admin/warnings', label: t('admin.warnings'), icon: AlertTriangle },
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
     { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
-    { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield }
+    { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield },
+    { path: '/admin/transitaires', label: i18n.language === 'fr' ? 'Transitaires' : 'Forwarders', icon: Truck },
+    { path: '/admin/suppliers', label: i18n.language === 'fr' ? 'Fournisseurs' : 'Suppliers', icon: Factory },
+    { path: '/admin/accounts', label: i18n.language === 'fr' ? 'Comptes partenaires' : 'Partner accounts', icon: KeyRound }
   ];
 
   return (
@@ -55,6 +59,9 @@ const AdminPage = () => {
               <Route path="groupages" element={<AdminGroupages />} />
               <Route path="proposals" element={<AdminProposals />} />
               <Route path="kyc" element={<AdminKYC />} />
+              <Route path="transitaires" element={<AdminTransitaires />} />
+              <Route path="suppliers" element={<AdminSuppliers />} />
+              <Route path="accounts" element={<AdminPartnerAccounts />} />
             </Routes>
           </main>
         </div>
@@ -311,6 +318,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
   const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState([]);
   const [transitaires, setTransitaires] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
 
   const [formData, setFormData] = useState({
     title: initialData?.title || '',
@@ -320,6 +328,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     product_category_id: initialData?.product_category_id || '',
     product_url: initialData?.product_url || '',
     product_image_url: '',
+    supplier_id: '',
     supplier_name: '',
     supplier_location: 'Guangzhou, China',
     supplier_rating: 4.5,
@@ -327,6 +336,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     supplier_trade_assurance: true,
     business_license_url: '',
     transitaire_id: '',
+    shipping_option_id: '',
     unit_price_cny: 100,
     unit_weight_kg: 0.5,
     total_quantity: 100,
@@ -342,18 +352,45 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
   useEffect(() => {
     const loadOptions = async () => {
       try {
-        const [catRes, transRes] = await Promise.all([
+        const [catRes, transRes, supRes] = await Promise.all([
           api.get('/categories'),
-          api.get('/transitaires')
+          api.get('/transitaires'),
+          api.get('/admin/suppliers?active_only=true')
         ]);
         setCategories(catRes.data);
         setTransitaires(transRes.data);
+        setSuppliers(supRes.data);
       } catch (error) {
         console.error('Error loading categories/transitaires:', error);
       }
     };
     loadOptions();
   }, []);
+
+  // Options de transport au kg du transitaire selectionne (le comparateur de prix
+  // des groupages ne supporte pas encore la facturation au CBM).
+  const selectedTransitaire = transitaires.find(tr => tr.transitaire_id === formData.transitaire_id);
+  const kgOptions = (selectedTransitaire?.shipping_options || []).filter(o => o.unit === 'kg' && o.is_active !== false);
+  const legacyTransitaire = selectedTransitaire && !(selectedTransitaire.shipping_options || []).length
+    && selectedTransitaire.shipping_price_per_kg_cny != null;
+
+  // Selection d'une fiche fournisseur : pre-remplit les champs fournisseur du groupage
+  const handleSupplierSelect = (supplierId) => {
+    const supplier = suppliers.find(s => s.supplier_id === supplierId);
+    if (supplier) {
+      setFormData(prev => ({
+        ...prev,
+        supplier_id: supplierId,
+        supplier_name: supplier.name,
+        supplier_location: supplier.location,
+        supplier_rating: supplier.rating ?? 4.5,
+        supplier_gold_status: !!supplier.gold_status,
+        supplier_trade_assurance: !!supplier.trade_assurance
+      }));
+    } else {
+      setFormData(prev => ({ ...prev, supplier_id: '' }));
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -362,6 +399,18 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
       toast.error(i18n.language === 'fr'
         ? 'Sélectionnez une catégorie et un transitaire'
         : 'Select a category and a transitaire');
+      return;
+    }
+    if (kgOptions.length > 0 && !formData.shipping_option_id) {
+      toast.error(i18n.language === 'fr'
+        ? 'Sélectionnez une option de transport'
+        : 'Select a shipping option');
+      return;
+    }
+    if (selectedTransitaire && kgOptions.length === 0 && !legacyTransitaire) {
+      toast.error(i18n.language === 'fr'
+        ? "Ce transitaire n'a aucune option de transport au kg — ajoutez-en une dans l'onglet Transitaires."
+        : 'This forwarder has no per-kg shipping option — add one in the Forwarders tab.');
       return;
     }
     if (!formData.business_license_url) {
@@ -381,6 +430,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         product_category_id: formData.product_category_id,
         product_url: formData.product_url,
         product_image_url: formData.product_image_url || null,
+        supplier_id: formData.supplier_id || null,
         supplier_name: formData.supplier_name,
         supplier_location: formData.supplier_location,
         supplier_rating: parseFloat(formData.supplier_rating),
@@ -393,6 +443,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
           factory_audit_url: null
         },
         transitaire_id: formData.transitaire_id,
+        shipping_option_id: formData.shipping_option_id || null,
         unit_price_cny: parseFloat(formData.unit_price_cny),
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
         total_quantity: parseInt(formData.total_quantity),
@@ -499,7 +550,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
               </label>
               <select
                 value={formData.transitaire_id}
-                onChange={(e) => setFormData({...formData, transitaire_id: e.target.value})}
+                onChange={(e) => setFormData({...formData, transitaire_id: e.target.value, shipping_option_id: ''})}
                 className="input-dark w-full px-4 py-2 rounded-md"
                 required
                 data-testid="transitaire-select"
@@ -513,6 +564,57 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
               </select>
             </div>
           </div>
+
+          {/* Option de transport du transitaire selectionne */}
+          {formData.transitaire_id && kgOptions.length > 0 && (
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {i18n.language === 'fr' ? 'Option de transport' : 'Shipping option'}
+              </label>
+              <select
+                value={formData.shipping_option_id}
+                onChange={(e) => setFormData({...formData, shipping_option_id: e.target.value})}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                required
+                data-testid="shipping-option-select"
+              >
+                <option value="">{i18n.language === 'fr' ? '-- Choisir --' : '-- Select --'}</option>
+                {kgOptions.map(opt => (
+                  <option key={opt.option_id} value={opt.option_id}>
+                    {opt.label} — {new Intl.NumberFormat('fr-FR').format(opt.price_fcfa)} FCFA/kg ({opt.eta_min_days}-{opt.eta_max_days}j)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {formData.transitaire_id && kgOptions.length === 0 && !legacyTransitaire && (
+            <p className="text-sm text-[#F97316]">
+              {i18n.language === 'fr'
+                ? "⚠ Ce transitaire n'a pas d'option de transport au kg. Ajoutez-en une dans l'onglet Transitaires."
+                : '⚠ This forwarder has no per-kg shipping option. Add one in the Forwarders tab.'}
+            </p>
+          )}
+
+          {/* Fiche fournisseur (optionnel) : pre-remplit les champs et permet au
+              fournisseur de suivre ce groupage depuis son espace partenaire */}
+          {suppliers.length > 0 && (
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {i18n.language === 'fr' ? 'Fiche fournisseur (optionnel, pour l\'espace fournisseur)' : 'Supplier record (optional, for supplier portal)'}
+              </label>
+              <select
+                value={formData.supplier_id}
+                onChange={(e) => handleSupplierSelect(e.target.value)}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                data-testid="supplier-link-select"
+              >
+                <option value="">{i18n.language === 'fr' ? '-- Aucune (saisie manuelle) --' : '-- None (manual entry) --'}</option>
+                {suppliers.map(s => (
+                  <option key={s.supplier_id} value={s.supplier_id}>{s.name} ({s.location})</option>
+                ))}
+              </select>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm text-[#A1A1AA] mb-2">
@@ -1035,6 +1137,785 @@ const AdminProposals = () => {
                   )}
                 </div>
               </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ============ Admin Transitaires ============
+
+const EMPTY_OPTION = { label: '', mode: 'air', price_fcfa: '', unit: 'kg', eta_min_days: '', eta_max_days: '', is_active: true };
+
+const AdminTransitaires = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [transitaires, setTransitaires] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null); // null | 'new' | transitaire object
+
+  const fetchTransitaires = async () => {
+    try {
+      const response = await api.get('/transitaires?active_only=false');
+      setTransitaires(response.data);
+    } catch (error) {
+      console.error('Error fetching transitaires:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTransitaires();
+  }, []);
+
+  if (loading) {
+    return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-transitaires">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="font-['Bebas_Neue'] text-3xl">{fr ? 'Transitaires' : 'Forwarders'}</h1>
+        <button
+          onClick={() => setEditing('new')}
+          className="btn-gold px-4 py-2 rounded-md flex items-center gap-2"
+          data-testid="create-transitaire-btn"
+        >
+          <Plus className="w-5 h-5" />
+          {fr ? 'Ajouter un transitaire' : 'Add forwarder'}
+        </button>
+      </div>
+
+      {transitaires.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center">
+          <Truck className="w-12 h-12 text-[#2A2A2A] mx-auto mb-4" />
+          <p className="text-[#A1A1AA]">{fr ? 'Aucun transitaire enregistré' : 'No forwarder yet'}</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {transitaires.map(tr => (
+            <div key={tr.transitaire_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+              <div className="flex items-start justify-between gap-4 mb-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold">{tr.name}</h3>
+                    {!tr.is_active && (
+                      <span className="badge-danger px-2 py-0.5 rounded text-xs">{fr ? 'Inactif' : 'Inactive'}</span>
+                    )}
+                  </div>
+                  <p className="text-sm text-[#71717A]">
+                    {tr.city}, {tr.country} · {fr ? 'Licence' : 'License'}: {tr.license_number}
+                    {tr.contact_phone && ` · ${tr.contact_phone}`}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setEditing(tr)}
+                  className="btn-outline px-3 py-1.5 rounded-md text-sm flex items-center gap-1 shrink-0"
+                >
+                  <Pencil className="w-4 h-4" />
+                  {fr ? 'Modifier' : 'Edit'}
+                </button>
+              </div>
+
+              {/* Options de transport */}
+              {(tr.shipping_options || []).length > 0 ? (
+                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-2">
+                  {tr.shipping_options.map((opt, idx) => (
+                    <div key={idx} className={`bg-[#0A0A0A] border rounded-md p-3 ${opt.is_active ? 'border-[#2A2A2A]' : 'border-[#EF4444]/30 opacity-60'}`}>
+                      <p className="text-sm font-medium">{opt.label}</p>
+                      <p className="font-['Bebas_Neue'] text-xl text-[#D4AF37]">
+                        {new Intl.NumberFormat('fr-FR').format(opt.price_fcfa)} FCFA/{opt.unit}
+                      </p>
+                      <p className="text-xs text-[#71717A]">
+                        {opt.mode === 'air' ? (fr ? 'Aérien' : 'Air') : (fr ? 'Maritime' : 'Sea')} · {opt.eta_min_days}-{opt.eta_max_days} {fr ? 'jours' : 'days'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-[#F97316]">
+                  {fr ? "⚠ Aucune option de transport — ajoutez-en pour pouvoir créer des groupages avec ce transitaire."
+                      : '⚠ No shipping option — add some to create groupages with this forwarder.'}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <TransitaireModal
+          transitaire={editing === 'new' ? null : editing}
+          fr={fr}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            fetchTransitaires();
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+const TransitaireModal = ({ transitaire, fr, onClose, onSaved }) => {
+  const isNew = !transitaire;
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: transitaire?.name || '',
+    city: transitaire?.city || '',
+    country: transitaire?.country || '',
+    license_number: transitaire?.license_number || '',
+    contact_phone: transitaire?.contact_phone || '',
+    contact_email: transitaire?.contact_email || '',
+    website: transitaire?.website || '',
+    is_active: transitaire?.is_active !== false
+  });
+  const [options, setOptions] = useState(
+    (transitaire?.shipping_options || []).map(o => ({ ...o }))
+  );
+
+  const updateOption = (idx, field, value) => {
+    setOptions(prev => prev.map((o, i) => (i === idx ? { ...o, [field]: value } : o)));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    const cleanedOptions = options
+      .filter(o => o.label.trim() && o.price_fcfa !== '' && o.eta_min_days !== '' && o.eta_max_days !== '')
+      .map(o => ({
+        ...(o.option_id ? { option_id: o.option_id } : {}),
+        label: o.label,
+        mode: o.mode,
+        price_fcfa: parseFloat(o.price_fcfa),
+        unit: o.unit,
+        eta_min_days: parseInt(o.eta_min_days),
+        eta_max_days: parseInt(o.eta_max_days),
+        is_active: o.is_active !== false
+      }));
+
+    const payload = {
+      name: form.name,
+      city: form.city,
+      country: form.country,
+      license_number: form.license_number,
+      contact_phone: form.contact_phone || null,
+      contact_email: form.contact_email || null,
+      website: form.website || null,
+      shipping_options: cleanedOptions,
+      is_active: form.is_active
+    };
+
+    setSaving(true);
+    try {
+      if (isNew) {
+        await api.post('/admin/transitaires', payload);
+      } else {
+        await api.put(`/admin/transitaires/${transitaire.transitaire_id}`, payload);
+      }
+      toast.success(fr ? 'Transitaire enregistré!' : 'Forwarder saved!');
+      onSaved();
+    } catch (error) {
+      console.error('Error saving transitaire:', error);
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-[#2A2A2A] flex justify-between items-center">
+          <h2 className="font-['Bebas_Neue'] text-2xl">
+            {isNew ? (fr ? 'Nouveau transitaire' : 'New forwarder') : (fr ? 'Modifier le transitaire' : 'Edit forwarder')}
+          </h2>
+          <button onClick={onClose} className="text-[#71717A] hover:text-white">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Nom' : 'Name'} *</label>
+              <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required data-testid="transitaire-name-input" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'N° de licence' : 'License number'} *</label>
+              <input type="text" value={form.license_number} onChange={(e) => setForm({ ...form, license_number: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Ville' : 'City'} *</label>
+              <input type="text" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Pays' : 'Country'} *</label>
+              <input type="text" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Téléphone' : 'Phone'}</label>
+              <input type="tel" value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" placeholder="+86 ..." />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Email</label>
+              <input type="email" value={form.contact_email} onChange={(e) => setForm({ ...form, contact_email: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Site web' : 'Website'}</label>
+              <input type="url" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" placeholder="https://..." />
+            </div>
+          </div>
+
+          {/* Options de transport */}
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <label className="text-sm text-[#A1A1AA]">
+                {fr ? 'Options de transport (prix en FCFA)' : 'Shipping options (prices in FCFA)'}
+              </label>
+              <button
+                type="button"
+                onClick={() => setOptions([...options, { ...EMPTY_OPTION }])}
+                className="btn-outline px-3 py-1 rounded-md text-xs flex items-center gap-1"
+                data-testid="add-option-btn"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                {fr ? 'Ajouter une option' : 'Add option'}
+              </button>
+            </div>
+
+            {options.length === 0 && (
+              <p className="text-xs text-[#71717A] mb-2">
+                {fr ? 'Ex: Aérien normal 8 997 FCFA/kg (7-15j), Aérien express 10 997 FCFA/kg (2-3j), Maritime 349 500 FCFA/cbm (45-60j)...'
+                    : 'E.g.: Normal air 8,997 FCFA/kg (7-15d), Express air 10,997 FCFA/kg (2-3d), Sea 349,500 FCFA/cbm (45-60d)...'}
+              </p>
+            )}
+
+            <div className="space-y-3">
+              {options.map((opt, idx) => (
+                <div key={idx} className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-md p-3 grid grid-cols-2 md:grid-cols-7 gap-2 items-end">
+                  <div className="col-span-2">
+                    <label className="block text-xs text-[#71717A] mb-1">{fr ? 'Nom' : 'Label'}</label>
+                    <input type="text" value={opt.label} onChange={(e) => updateOption(idx, 'label', e.target.value)}
+                      className="input-dark w-full px-3 py-1.5 rounded-md text-sm" placeholder={fr ? 'Aérien normal' : 'Normal air'} />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#71717A] mb-1">Mode</label>
+                    <select value={opt.mode} onChange={(e) => updateOption(idx, 'mode', e.target.value)}
+                      className="input-dark w-full px-2 py-1.5 rounded-md text-sm">
+                      <option value="air">{fr ? 'Aérien' : 'Air'}</option>
+                      <option value="sea">{fr ? 'Maritime' : 'Sea'}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#71717A] mb-1">{fr ? 'Prix FCFA' : 'Price FCFA'}</label>
+                    <input type="number" value={opt.price_fcfa} onChange={(e) => updateOption(idx, 'price_fcfa', e.target.value)}
+                      className="input-dark w-full px-3 py-1.5 rounded-md text-sm" />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#71717A] mb-1">{fr ? 'Unité' : 'Unit'}</label>
+                    <select value={opt.unit} onChange={(e) => updateOption(idx, 'unit', e.target.value)}
+                      className="input-dark w-full px-2 py-1.5 rounded-md text-sm">
+                      <option value="kg">/kg</option>
+                      <option value="cbm">/CBM</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#71717A] mb-1">{fr ? 'Délai min (j)' : 'ETA min (d)'}</label>
+                    <input type="number" value={opt.eta_min_days} onChange={(e) => updateOption(idx, 'eta_min_days', e.target.value)}
+                      className="input-dark w-full px-3 py-1.5 rounded-md text-sm" />
+                  </div>
+                  <div className="flex items-end gap-1">
+                    <div className="flex-1">
+                      <label className="block text-xs text-[#71717A] mb-1">{fr ? 'Délai max (j)' : 'ETA max (d)'}</label>
+                      <input type="number" value={opt.eta_max_days} onChange={(e) => updateOption(idx, 'eta_max_days', e.target.value)}
+                        className="input-dark w-full px-3 py-1.5 rounded-md text-sm" />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setOptions(options.filter((_, i) => i !== idx))}
+                      className="text-[#EF4444] hover:bg-[#EF4444]/10 rounded p-1.5 mb-0.5"
+                      title={fr ? 'Supprimer' : 'Remove'}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <p className="text-xs text-[#71717A] mt-2">
+              {fr ? 'Note : seules les options au kg peuvent être utilisées dans le comparateur de prix des groupages. Les options au CBM restent affichées à titre informatif.'
+                  : 'Note: only per-kg options can feed the groupage price comparator. CBM options remain informational.'}
+            </p>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm text-[#A1A1AA]">
+            <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
+            {fr ? 'Transitaire actif' : 'Active forwarder'}
+          </label>
+
+          <div className="flex gap-4 pt-2">
+            <button type="button" onClick={onClose} className="btn-outline px-6 py-3 rounded-md flex-1">
+              {fr ? 'Annuler' : 'Cancel'}
+            </button>
+            <button type="submit" disabled={saving}
+              className="btn-gold px-6 py-3 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="save-transitaire-btn">
+              {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============ Admin Suppliers ============
+
+const AdminSuppliers = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [suppliers, setSuppliers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+
+  const fetchSuppliers = async () => {
+    try {
+      const response = await api.get('/admin/suppliers');
+      setSuppliers(response.data);
+    } catch (error) {
+      console.error('Error fetching suppliers:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchSuppliers();
+  }, []);
+
+  if (loading) {
+    return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-suppliers">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="font-['Bebas_Neue'] text-3xl">{fr ? 'Fournisseurs' : 'Suppliers'}</h1>
+        <button
+          onClick={() => setEditing('new')}
+          className="btn-gold px-4 py-2 rounded-md flex items-center gap-2"
+          data-testid="create-supplier-btn"
+        >
+          <Plus className="w-5 h-5" />
+          {fr ? 'Ajouter un fournisseur' : 'Add supplier'}
+        </button>
+      </div>
+
+      {suppliers.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center">
+          <Factory className="w-12 h-12 text-[#2A2A2A] mx-auto mb-4" />
+          <p className="text-[#A1A1AA]">
+            {fr ? 'Aucune fiche fournisseur. Créez-en une pour pouvoir lier un fournisseur à un groupage et lui ouvrir un accès.'
+                : 'No supplier yet. Create one to link it to groupages and give it portal access.'}
+          </p>
+        </div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-4">
+          {suppliers.map(s => (
+            <div key={s.supplier_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold">{s.name}</h3>
+                    {!s.is_active && <span className="badge-danger px-2 py-0.5 rounded text-xs">{fr ? 'Inactif' : 'Inactive'}</span>}
+                  </div>
+                  <p className="text-sm text-[#71717A]">{s.location}</p>
+                  <div className="flex gap-2 mt-1">
+                    {s.gold_status && <span className="badge-gold px-2 py-0.5 rounded text-xs">Gold</span>}
+                    {s.trade_assurance && <span className="badge-success px-2 py-0.5 rounded text-xs">Trade Assurance</span>}
+                    <span className="text-xs text-[#71717A]">★ {s.rating}/5</span>
+                  </div>
+                </div>
+                <button onClick={() => setEditing(s)} className="btn-outline px-3 py-1.5 rounded-md text-sm flex items-center gap-1 shrink-0">
+                  <Pencil className="w-4 h-4" />
+                  {fr ? 'Modifier' : 'Edit'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <SupplierModal
+          supplier={editing === 'new' ? null : editing}
+          fr={fr}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            fetchSuppliers();
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+const SupplierModal = ({ supplier, fr, onClose, onSaved }) => {
+  const isNew = !supplier;
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    name: supplier?.name || '',
+    location: supplier?.location || 'Guangzhou, China',
+    contact_phone: supplier?.contact_phone || '',
+    contact_email: supplier?.contact_email || '',
+    rating: supplier?.rating ?? 4.5,
+    gold_status: supplier?.gold_status || false,
+    trade_assurance: supplier?.trade_assurance || false,
+    notes: supplier?.notes || '',
+    is_active: supplier?.is_active !== false
+  });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const payload = {
+      ...form,
+      rating: parseFloat(form.rating),
+      contact_phone: form.contact_phone || null,
+      contact_email: form.contact_email || null,
+      notes: form.notes || null
+    };
+
+    setSaving(true);
+    try {
+      if (isNew) {
+        await api.post('/admin/suppliers', payload);
+      } else {
+        await api.put(`/admin/suppliers/${supplier.supplier_id}`, payload);
+      }
+      toast.success(fr ? 'Fournisseur enregistré!' : 'Supplier saved!');
+      onSaved();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="p-6 border-b border-[#2A2A2A] flex justify-between items-center">
+          <h2 className="font-['Bebas_Neue'] text-2xl">
+            {isNew ? (fr ? 'Nouveau fournisseur' : 'New supplier') : (fr ? 'Modifier le fournisseur' : 'Edit supplier')}
+          </h2>
+          <button onClick={onClose} className="text-[#71717A] hover:text-white">
+            <X className="w-6 h-6" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Nom' : 'Name'} *</label>
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" required data-testid="supplier-name-input" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Localisation' : 'Location'} *</label>
+            <input type="text" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" required />
+          </div>
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Téléphone' : 'Phone'}</label>
+              <input type="tel" value={form.contact_phone} onChange={(e) => setForm({ ...form, contact_phone: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Email</label>
+              <input type="email" value={form.contact_email} onChange={(e) => setForm({ ...form, contact_email: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+          </div>
+          <div className="grid md:grid-cols-3 gap-4 items-end">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Note (/5)</label>
+              <input type="number" step="0.1" min="0" max="5" value={form.rating}
+                onChange={(e) => setForm({ ...form, rating: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-[#A1A1AA]">
+              <input type="checkbox" checked={form.gold_status} onChange={(e) => setForm({ ...form, gold_status: e.target.checked })} />
+              Gold Supplier
+            </label>
+            <label className="flex items-center gap-2 text-sm text-[#A1A1AA]">
+              <input type="checkbox" checked={form.trade_assurance} onChange={(e) => setForm({ ...form, trade_assurance: e.target.checked })} />
+              Trade Assurance
+            </label>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Notes internes' : 'Internal notes'}</label>
+            <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md h-20" />
+          </div>
+          <label className="flex items-center gap-2 text-sm text-[#A1A1AA]">
+            <input type="checkbox" checked={form.is_active} onChange={(e) => setForm({ ...form, is_active: e.target.checked })} />
+            {fr ? 'Fournisseur actif' : 'Active supplier'}
+          </label>
+
+          <div className="flex gap-4 pt-2">
+            <button type="button" onClick={onClose} className="btn-outline px-6 py-3 rounded-md flex-1">
+              {fr ? 'Annuler' : 'Cancel'}
+            </button>
+            <button type="submit" disabled={saving}
+              className="btn-gold px-6 py-3 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="save-supplier-btn">
+              {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============ Admin Partner Accounts ============
+
+const AdminPartnerAccounts = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [accounts, setAccounts] = useState([]);
+  const [transitaires, setTransitaires] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [tempCredentials, setTempCredentials] = useState(null); // {email, temp_password}
+  const [resettingId, setResettingId] = useState(null);
+  const [form, setForm] = useState({ email: '', name: '', role: 'transitaire', entity_id: '' });
+
+  const fetchAll = async () => {
+    try {
+      const [accRes, trRes, supRes] = await Promise.all([
+        api.get('/admin/partner-accounts'),
+        api.get('/transitaires?active_only=false'),
+        api.get('/admin/suppliers')
+      ]);
+      setAccounts(accRes.data);
+      setTransitaires(trRes.data);
+      setSuppliers(supRes.data);
+    } catch (error) {
+      console.error('Error fetching partner accounts:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAll();
+  }, []);
+
+  const entities = form.role === 'transitaire' ? transitaires : suppliers;
+  const entityIdKey = form.role === 'transitaire' ? 'transitaire_id' : 'supplier_id';
+
+  const entityName = (account) => {
+    if (account.role === 'transitaire') {
+      return transitaires.find(t => t.transitaire_id === account.entity_id)?.name || account.entity_id;
+    }
+    return suppliers.find(s => s.supplier_id === account.entity_id)?.name || account.entity_id;
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard?.writeText(text)
+      .then(() => toast.success(fr ? 'Copié!' : 'Copied!'))
+      .catch(() => {});
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!form.entity_id) {
+      toast.error(fr ? 'Sélectionnez la fiche à relier' : 'Select the linked entity');
+      return;
+    }
+
+    setCreating(true);
+    try {
+      const response = await api.post('/admin/partner-accounts', form);
+      setTempCredentials({ email: response.data.email, temp_password: response.data.temp_password });
+      setForm({ email: '', name: '', role: 'transitaire', entity_id: '' });
+      fetchAll();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleReset = async (userId, email) => {
+    setResettingId(userId);
+    try {
+      const response = await api.post(`/admin/partner-accounts/${userId}/reset-password`);
+      setTempCredentials({ email, temp_password: response.data.temp_password });
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setResettingId(null);
+    }
+  };
+
+  if (loading) {
+    return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-accounts">
+      <h1 className="font-['Bebas_Neue'] text-3xl mb-2">{fr ? 'Comptes partenaires' : 'Partner accounts'}</h1>
+      <p className="text-[#71717A] text-sm mb-6">
+        {fr ? "Créez des accès pour vos transitaires et fournisseurs. Le mot de passe provisoire ne s'affiche qu'une seule fois — transmettez-le au partenaire, il devra le changer à sa première connexion."
+            : 'Create access for your forwarders and suppliers. The temporary password is shown only once — send it to the partner; they must change it at first login.'}
+      </p>
+
+      {/* Mot de passe provisoire affiche une seule fois */}
+      {tempCredentials && (
+        <div className="bg-[#D4AF37]/10 border border-[#D4AF37] rounded-lg p-4 mb-6" data-testid="temp-password-box">
+          <p className="text-sm text-[#D4AF37] font-medium mb-2">
+            {fr ? '⚠ Notez ces identifiants maintenant — le mot de passe ne sera plus jamais affiché.'
+                : '⚠ Save these credentials now — the password will never be shown again.'}
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <code className="bg-[#0A0A0A] px-3 py-1.5 rounded text-sm">{tempCredentials.email}</code>
+            <code className="bg-[#0A0A0A] px-3 py-1.5 rounded text-sm font-bold">{tempCredentials.temp_password}</code>
+            <button
+              onClick={() => copyToClipboard(`${fr ? 'Identifiants SilkRoute' : 'SilkRoute credentials'}\nEmail: ${tempCredentials.email}\n${fr ? 'Mot de passe provisoire' : 'Temporary password'}: ${tempCredentials.temp_password}\n${window.location.origin}/login`)}
+              className="btn-outline px-3 py-1.5 rounded-md text-sm flex items-center gap-1"
+            >
+              <Copy className="w-4 h-4" />
+              {fr ? 'Copier' : 'Copy'}
+            </button>
+            <button onClick={() => setTempCredentials(null)} className="text-[#71717A] hover:text-white ml-auto">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Formulaire de creation */}
+      <form onSubmit={handleCreate} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6 mb-8">
+        <h3 className="font-medium mb-4 flex items-center gap-2">
+          <Plus className="w-5 h-5 text-[#D4AF37]" />
+          {fr ? 'Créer un compte' : 'Create account'}
+        </h3>
+        <div className="grid md:grid-cols-4 gap-4">
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Rôle' : 'Role'}</label>
+            <select
+              value={form.role}
+              onChange={(e) => setForm({ ...form, role: e.target.value, entity_id: '' })}
+              className="input-dark w-full px-4 py-2 rounded-md"
+              data-testid="account-role-select"
+            >
+              <option value="transitaire">{fr ? 'Transitaire' : 'Forwarder'}</option>
+              <option value="supplier">{fr ? 'Fournisseur' : 'Supplier'}</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">
+              {fr ? 'Fiche à relier' : 'Linked entity'}
+            </label>
+            <select
+              value={form.entity_id}
+              onChange={(e) => setForm({ ...form, entity_id: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md"
+              required
+              data-testid="account-entity-select"
+            >
+              <option value="">-- {fr ? 'Choisir' : 'Select'} --</option>
+              {entities.map(ent => (
+                <option key={ent[entityIdKey]} value={ent[entityIdKey]}>{ent.name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Nom du contact' : 'Contact name'}</label>
+            <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" required data-testid="account-name-input" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">Email</label>
+            <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" required data-testid="account-email-input" />
+          </div>
+        </div>
+        {entities.length === 0 && (
+          <p className="text-xs text-[#F97316] mt-3">
+            {fr ? `Créez d'abord une fiche ${form.role === 'transitaire' ? 'transitaire' : 'fournisseur'} dans l'onglet correspondant.`
+                : `Create a ${form.role} record first in the corresponding tab.`}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={creating || entities.length === 0}
+          className="btn-gold px-6 py-2.5 rounded-md mt-4 flex items-center gap-2 disabled:opacity-50"
+          data-testid="create-account-btn"
+        >
+          {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+          {fr ? 'Créer et générer le mot de passe' : 'Create and generate password'}
+        </button>
+      </form>
+
+      {/* Liste des comptes */}
+      {accounts.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center">
+          <KeyRound className="w-12 h-12 text-[#2A2A2A] mx-auto mb-4" />
+          <p className="text-[#A1A1AA]">{fr ? 'Aucun compte partenaire' : 'No partner account yet'}</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {accounts.map(account => (
+            <div key={account.user_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4 flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h4 className="font-medium truncate">{account.name}</h4>
+                  <span className={`px-2 py-0.5 rounded text-xs ${account.role === 'transitaire' ? 'bg-[#D4AF37]/20 text-[#D4AF37]' : 'bg-[#22C55E]/20 text-[#22C55E]'}`}>
+                    {account.role === 'transitaire' ? (fr ? 'Transitaire' : 'Forwarder') : (fr ? 'Fournisseur' : 'Supplier')}
+                  </span>
+                  {account.must_change_password && (
+                    <span className="badge-warning px-2 py-0.5 rounded text-xs">
+                      {fr ? 'Mdp provisoire' : 'Temp password'}
+                    </span>
+                  )}
+                </div>
+                <p className="text-sm text-[#71717A] truncate">
+                  {account.email} · {fr ? 'Lié à' : 'Linked to'}: {entityName(account)}
+                </p>
+              </div>
+              <button
+                onClick={() => handleReset(account.user_id, account.email)}
+                disabled={resettingId === account.user_id}
+                className="btn-outline px-3 py-1.5 rounded-md text-sm flex items-center gap-1 shrink-0 disabled:opacity-50"
+                title={fr ? 'Régénérer un mot de passe provisoire' : 'Regenerate temporary password'}
+              >
+                {resettingId === account.user_id ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {fr ? 'Réinit. mdp' : 'Reset pwd'}
+              </button>
             </div>
           ))}
         </div>

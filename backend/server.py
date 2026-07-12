@@ -17,6 +17,7 @@ import socketio
 import cloudinary
 import cloudinary.utils
 import time
+import secrets
 from difflib import SequenceMatcher
 import re
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -59,6 +60,10 @@ CNY_TO_FCFA = 85   # Taux de conversion CNY -> FCFA
 SILKROUTE_FEE_FCFA = 5000  # Frais SilkRoute fixes
 MIN_GROUPAGE_TOTAL_FCFA = 25000  # Total minimum (frais de service inclus) pour pouvoir rejoindre un groupage
 SOLO_FEE_USD = 5  # Frais fixes pour commande solo en USD
+
+# Phases d'expedition d'un groupage, dans l'ordre. Mises a jour par le transitaire
+# (ou l'admin) et affichees aux membres sur la page du groupage.
+SHIPMENT_PHASES = ["preparation", "picked_up", "in_transit", "customs", "arrived", "delivered"]
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -144,6 +149,31 @@ class BuyerProfileCreate(BaseModel):
     description: Optional[str] = None
     typical_categories: List[str] = []
 
+# Option de transport proposee par un transitaire (ex: aerien normal, aerien
+# express, maritime). Prix en FCFA, factures au kg (aerien) ou au CBM (maritime).
+class ShippingOption(BaseModel):
+    label: str  # ex: "Aerien normal", "Aerien express", "Maritime"
+    mode: str  # "air" | "sea"
+    price_fcfa: float
+    unit: str = "kg"  # "kg" | "cbm"
+    eta_min_days: int
+    eta_max_days: int
+    is_active: bool = True
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, v: str) -> str:
+        if v not in ("air", "sea"):
+            raise ValueError("mode must be 'air' or 'sea'")
+        return v
+
+    @field_validator("unit")
+    @classmethod
+    def validate_unit(cls, v: str) -> str:
+        if v not in ("kg", "cbm"):
+            raise ValueError("unit must be 'kg' or 'cbm'")
+        return v
+
 # Transitaire
 class TransitaireCreate(BaseModel):
     name: str
@@ -152,9 +182,66 @@ class TransitaireCreate(BaseModel):
     license_number: str
     contact_phone: Optional[str] = None
     contact_email: Optional[str] = None
-    shipping_price_per_kg_cny: float  # Prix par kg en CNY
-    estimated_days: int  # Délai estimé en jours
+    website: Optional[str] = None
+    shipping_options: List[ShippingOption] = []
     is_active: bool = True
+
+# Fournisseur (fiche geree par l'admin, liee ensuite aux groupages)
+class SupplierCreate(BaseModel):
+    name: str
+    location: str
+    contact_phone: Optional[str] = None
+    contact_email: Optional[str] = None
+    rating: float = 4.5
+    gold_status: bool = False
+    trade_assurance: bool = False
+    notes: Optional[str] = None
+    is_active: bool = True
+
+# Compte partenaire (transitaire ou fournisseur) cree par l'admin
+class PartnerAccountCreate(BaseModel):
+    email: EmailStr
+    name: str
+    role: str  # "transitaire" | "supplier"
+    entity_id: str  # transitaire_id ou supplier_id correspondant
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        if v not in ("transitaire", "supplier"):
+            raise ValueError("role must be 'transitaire' or 'supplier'")
+        return v
+
+class ChangePassword(BaseModel):
+    current_password: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        return v
+
+# Mise a jour de phase d'expedition par le transitaire
+class PhaseUpdate(BaseModel):
+    phase: str
+    note: Optional[str] = None
+
+# Avis post-livraison laisse par un membre
+class ReviewCreate(BaseModel):
+    rating: int
+    comment: Optional[str] = None
+
+    @field_validator("rating")
+    @classmethod
+    def validate_rating(cls, v: int) -> int:
+        if not 1 <= v <= 5:
+            raise ValueError("rating must be between 1 and 5")
+        return v
+
+class ReviewReply(BaseModel):
+    reply: str
 
 # Documents fournisseur (obligatoires pour publier)
 class SupplierDocuments(BaseModel):
@@ -174,15 +261,17 @@ class GroupageCreate(BaseModel):
     product_image_url: Optional[str] = None
     
     # Fournisseur
+    supplier_id: Optional[str] = None  # Lien vers une fiche fournisseur (portail)
     supplier_name: str
     supplier_location: str
     supplier_rating: float
     supplier_gold_status: bool = False
     supplier_trade_assurance: bool = False
     supplier_documents: SupplierDocuments  # OBLIGATOIRE
-    
+
     # Transitaire - maintenant par ID
     transitaire_id: str  # ID du transitaire sélectionné
+    shipping_option_id: Optional[str] = None  # Option de transport choisie (nouvelles fiches)
     
     # Prix et poids
     unit_price_cny: float  # Prix unitaire en CNY
@@ -228,7 +317,7 @@ class GroupageResponse(BaseModel):
     transitaire_license: str
     unit_price_cny: float
     unit_weight_kg: float
-    transport_price_per_kg_cny: float
+    transport_price_per_kg_fcfa: float
     total_quantity: int
     total_order_price_cny: float
     min_members: int
@@ -311,19 +400,25 @@ async def get_current_user(request: Request) -> dict:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
 
-def calculate_solo_price(unit_price_cny: float, unit_weight_kg: float, quantity: int, transport_price_per_kg_cny: float) -> dict:
+def get_transport_price_per_kg_fcfa(groupage: dict) -> float:
+    """Prix transport au kg en FCFA. Les nouvelles fiches transitaires stockent
+    directement le prix FCFA ; les anciens groupages n'ont qu'un prix CNY, converti."""
+    if groupage.get("transport_price_per_kg_fcfa") is not None:
+        return groupage["transport_price_per_kg_fcfa"]
+    return groupage.get("transport_price_per_kg_cny", 0) * CNY_TO_FCFA
+
+def calculate_solo_price(unit_price_cny: float, unit_weight_kg: float, quantity: int, transport_price_per_kg_fcfa: float) -> dict:
     """
     Calcul prix SEUL: Prix unitaire + 5 USD + (poids unitaire × quantité × prix transport)
     Tout converti en FCFA
     """
     unit_price_fcfa = unit_price_cny * CNY_TO_FCFA
     total_unit_price = unit_price_fcfa * quantity
-    
+
     solo_fee_fcfa = SOLO_FEE_USD * USD_TO_FCFA
-    
-    transport_cost_cny = unit_weight_kg * quantity * transport_price_per_kg_cny
-    transport_cost_fcfa = transport_cost_cny * CNY_TO_FCFA
-    
+
+    transport_cost_fcfa = unit_weight_kg * quantity * transport_price_per_kg_fcfa
+
     total_solo = total_unit_price + solo_fee_fcfa + transport_cost_fcfa
     price_per_unit_solo = total_solo / quantity if quantity > 0 else 0
     
@@ -390,7 +485,7 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
         groupage["unit_price_cny"],
         groupage["unit_weight_kg"],
         quantity,
-        groupage["transport_price_per_kg_cny"]
+        get_transport_price_per_kg_fcfa(groupage)
     )
     
     groupage_price = calculate_groupage_price(
@@ -503,6 +598,8 @@ async def get_me(user: dict = Depends(get_current_user)):
         "mobile_money": user.get("mobile_money"),
         "cgu_accepted": user.get("cgu_accepted", False),
         "buyer_profile": user.get("buyer_profile"),
+        "entity_id": user.get("entity_id"),
+        "must_change_password": user.get("must_change_password", False),
         # Jeton de courte duree expose au JS uniquement pour l'authentification du
         # websocket (Socket.IO ne peut pas lire le cookie httpOnly dans son handshake).
         # Ne remplace pas le cookie comme mecanisme d'authentification principal.
@@ -624,34 +721,55 @@ async def get_transitaire(transitaire_id: str):
         raise HTTPException(status_code=404, detail="Transitaire not found")
     return transitaire
 
+def _with_option_ids(options: List[dict]) -> List[dict]:
+    """Assigne un option_id stable a chaque option de transport qui n'en a pas
+    (necessaire pour la selection lors de la creation d'un groupage)."""
+    for opt in options:
+        if not opt.get("option_id"):
+            opt["option_id"] = f"opt_{uuid.uuid4().hex[:8]}"
+    return options
+
 @api_router.post("/admin/transitaires")
 async def create_transitaire(transitaire: TransitaireCreate, user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     transitaire_id = f"trans_{uuid.uuid4().hex[:8]}"
+    doc = transitaire.model_dump()
+    doc["shipping_options"] = _with_option_ids(doc.get("shipping_options", []))
     transitaire_doc = {
         "transitaire_id": transitaire_id,
-        **transitaire.model_dump(),
+        **doc,
         "created_by": user["user_id"],
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.transitaires.insert_one(transitaire_doc)
-    return {"transitaire_id": transitaire_id, **transitaire.model_dump()}
+    return {k: v for k, v in transitaire_doc.items() if k != "_id"}
 
 @api_router.put("/admin/transitaires/{transitaire_id}")
 async def update_transitaire(transitaire_id: str, request: Request, user: dict = Depends(get_current_user)):
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
-    
+
     data = await request.json()
-    allowed_fields = ["name", "city", "country", "license_number", "contact_phone", "contact_email", 
-                      "shipping_price_per_kg_cny", "estimated_days", "is_active"]
+    allowed_fields = ["name", "city", "country", "license_number", "contact_phone", "contact_email",
+                      "website", "shipping_options", "is_active"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
-    
+
+    if "shipping_options" in update_data:
+        # Valide chaque option via le modele pydantic, puis regenere les option_id manquants
+        validated = []
+        for raw in update_data["shipping_options"]:
+            option_id = raw.get("option_id")
+            opt = ShippingOption(**{k: v for k, v in raw.items() if k != "option_id"}).model_dump()
+            if option_id:
+                opt["option_id"] = option_id
+            validated.append(opt)
+        update_data["shipping_options"] = _with_option_ids(validated)
+
     if update_data:
         await db.transitaires.update_one({"transitaire_id": transitaire_id}, {"$set": update_data})
-    
+
     return {"message": "Transitaire updated"}
 
 @api_router.delete("/admin/transitaires/{transitaire_id}")
@@ -665,6 +783,275 @@ async def delete_transitaire(transitaire_id: str, user: dict = Depends(get_curre
         {"$set": {"is_active": False}}
     )
     return {"message": "Transitaire deactivated"}
+
+# ========================
+# SUPPLIERS (fiches fournisseurs)
+# ========================
+
+@api_router.get("/admin/suppliers")
+async def list_suppliers(active_only: bool = False, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    query = {"is_active": True} if active_only else {}
+    suppliers = await db.suppliers.find(query, {"_id": 0}).to_list(200)
+    return suppliers
+
+@api_router.post("/admin/suppliers")
+async def create_supplier(supplier: SupplierCreate, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    supplier_id = f"sup_{uuid.uuid4().hex[:8]}"
+    supplier_doc = {
+        "supplier_id": supplier_id,
+        **supplier.model_dump(),
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.suppliers.insert_one(supplier_doc)
+    return {k: v for k, v in supplier_doc.items() if k != "_id"}
+
+@api_router.put("/admin/suppliers/{supplier_id}")
+async def update_supplier(supplier_id: str, request: Request, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    data = await request.json()
+    allowed_fields = ["name", "location", "contact_phone", "contact_email", "rating",
+                      "gold_status", "trade_assurance", "notes", "is_active"]
+    update_data = {k: v for k, v in data.items() if k in allowed_fields}
+
+    if update_data:
+        await db.suppliers.update_one({"supplier_id": supplier_id}, {"$set": update_data})
+
+    return {"message": "Supplier updated"}
+
+# ========================
+# PARTNER ACCOUNTS (comptes transitaire / fournisseur crees par l'admin)
+# ========================
+
+@api_router.get("/admin/partner-accounts")
+async def list_partner_accounts(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    accounts = await db.users.find(
+        {"role": {"$in": ["transitaire", "supplier"]}},
+        {"_id": 0, "password_hash": 0}
+    ).to_list(200)
+    return accounts
+
+@api_router.post("/admin/partner-accounts")
+async def create_partner_account(account: PartnerAccountCreate, user: dict = Depends(get_current_user)):
+    """Cree un compte transitaire/fournisseur avec un mot de passe provisoire.
+    Le mot de passe n'est retourne qu'une seule fois, a l'admin, pour transmission
+    au partenaire ; le partenaire devra le changer a sa premiere connexion."""
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    existing = await db.users.find_one({"email": account.email})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    # Verifie que l'entite liee existe
+    if account.role == "transitaire":
+        entity = await db.transitaires.find_one({"transitaire_id": account.entity_id})
+    else:
+        entity = await db.suppliers.find_one({"supplier_id": account.entity_id})
+    if not entity:
+        raise HTTPException(status_code=400, detail=f"No {account.role} found with id {account.entity_id}")
+
+    temp_password = secrets.token_urlsafe(9)
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user_doc = {
+        "user_id": user_id,
+        "email": account.email,
+        "password_hash": hash_password(temp_password),
+        "name": account.name,
+        "phone": None,
+        "location": None,
+        "picture": None,
+        "language": "fr",
+        "role": account.role,
+        "entity_id": account.entity_id,
+        "must_change_password": True,
+        "kyc_status": "validated",  # les partenaires ne passent pas par le KYC membre
+        "kyc_documents": {},
+        "mobile_money": {},
+        "cgu_accepted": False,
+        "buyer_profile": None,
+        "created_by": user["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.insert_one(user_doc)
+
+    return {
+        "user_id": user_id,
+        "email": account.email,
+        "role": account.role,
+        "entity_id": account.entity_id,
+        "temp_password": temp_password,
+        "message": "Transmettez ce mot de passe provisoire au partenaire. Il devra le changer a sa premiere connexion."
+    }
+
+@api_router.post("/admin/partner-accounts/{user_id}/reset-password")
+async def reset_partner_password(user_id: str, admin: dict = Depends(get_current_user)):
+    """Regenere un mot de passe provisoire pour un compte partenaire."""
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    target = await db.users.find_one({"user_id": user_id, "role": {"$in": ["transitaire", "supplier"]}})
+    if not target:
+        raise HTTPException(status_code=404, detail="Partner account not found")
+
+    temp_password = secrets.token_urlsafe(9)
+    await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {"password_hash": hash_password(temp_password), "must_change_password": True}}
+    )
+    return {"user_id": user_id, "temp_password": temp_password}
+
+@api_router.put("/auth/change-password")
+async def change_password(payload: ChangePassword, user: dict = Depends(get_current_user)):
+    """Changement de mot de passe par l'utilisateur connecte (utilise notamment
+    par les partenaires a leur premiere connexion)."""
+    if not verify_password(payload.current_password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Mot de passe actuel incorrect")
+
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}}
+    )
+    return {"message": "Password changed"}
+
+# ========================
+# PARTNER PORTAL (transitaire & fournisseur)
+# ========================
+
+async def require_partner(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") not in ("transitaire", "supplier"):
+        raise HTTPException(status_code=403, detail="Partner access required")
+    if not user.get("entity_id"):
+        raise HTTPException(status_code=403, detail="No entity linked to this account")
+    return user
+
+def _partner_groupage_query(user: dict) -> dict:
+    if user["role"] == "transitaire":
+        return {"transitaire_id": user["entity_id"]}
+    return {"supplier_id": user["entity_id"]}
+
+@api_router.get("/partner/groupages")
+async def partner_groupages(user: dict = Depends(require_partner)):
+    """Groupages assignes au partenaire connecte (par sa fiche transitaire/fournisseur)."""
+    groupages = await db.groupages.find(_partner_groupage_query(user), {"_id": 0}).sort("created_at", -1).to_list(200)
+    return groupages
+
+@api_router.put("/partner/groupages/{groupage_id}/phase")
+async def update_shipment_phase(groupage_id: str, update: PhaseUpdate, user: dict = Depends(require_partner)):
+    """Le transitaire met a jour la phase d'expedition de SON groupage."""
+    if user["role"] != "transitaire":
+        raise HTTPException(status_code=403, detail="Only the transitaire can update shipment phases")
+
+    if update.phase not in SHIPMENT_PHASES:
+        raise HTTPException(status_code=400, detail=f"Invalid phase. Must be one of: {', '.join(SHIPMENT_PHASES)}")
+
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id, "transitaire_id": user["entity_id"]})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found or not assigned to you")
+
+    timeline_entry = {
+        "phase": update.phase,
+        "note": update.note,
+        "updated_by": user["user_id"],
+        "updated_by_name": user["name"],
+        "at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.groupages.update_one(
+        {"groupage_id": groupage_id},
+        {"$set": {"shipment_status": update.phase}, "$push": {"shipment_timeline": timeline_entry}}
+    )
+    return {"message": "Phase updated", "shipment_status": update.phase, "timeline_entry": timeline_entry}
+
+@api_router.post("/partner/groupages/{groupage_id}/documents")
+async def partner_add_document(groupage_id: str, doc: LogisticsDocument, user: dict = Depends(require_partner)):
+    """Le partenaire ajoute un document a SON groupage : documents logistiques pour
+    le transitaire, documents fournisseur pour le fournisseur."""
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id, **_partner_groupage_query(user)})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found or not assigned to you")
+
+    doc_data = doc.model_dump()
+    doc_data["uploaded_at"] = datetime.now(timezone.utc).isoformat()
+    doc_data["uploaded_by"] = user["user_id"]
+    doc_data["uploaded_by_role"] = user["role"]
+
+    target_field = "logistics_documents" if user["role"] == "transitaire" else "supplier_extra_documents"
+    await db.groupages.update_one(
+        {"groupage_id": groupage_id},
+        {"$push": {target_field: doc_data}}
+    )
+    return {"message": "Document added"}
+
+# ========================
+# REVIEWS (avis post-livraison)
+# ========================
+
+@api_router.post("/groupages/{groupage_id}/reviews")
+async def create_review(groupage_id: str, review: ReviewCreate, user: dict = Depends(get_current_user)):
+    """Un membre du groupage laisse un avis une fois la marchandise livree."""
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+
+    if groupage.get("shipment_status") != "delivered":
+        raise HTTPException(status_code=400, detail="Les avis ne sont possibles qu'apres livraison")
+
+    membership = await db.groupage_members.find_one({"groupage_id": groupage_id, "user_id": user["user_id"]})
+    if not membership:
+        raise HTTPException(status_code=403, detail="Only groupage members can leave a review")
+
+    existing = await db.groupage_reviews.find_one({"groupage_id": groupage_id, "user_id": user["user_id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="You already reviewed this groupage")
+
+    review_doc = {
+        "review_id": f"rev_{uuid.uuid4().hex[:12]}",
+        "groupage_id": groupage_id,
+        "supplier_id": groupage.get("supplier_id"),
+        "user_id": user["user_id"],
+        "user_name": user["name"],
+        "rating": review.rating,
+        "comment": review.comment,
+        "supplier_reply": None,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.groupage_reviews.insert_one(review_doc)
+    return {k: v for k, v in review_doc.items() if k != "_id"}
+
+@api_router.get("/groupages/{groupage_id}/reviews")
+async def list_reviews(groupage_id: str, user: dict = Depends(get_current_user)):
+    reviews = await db.groupage_reviews.find({"groupage_id": groupage_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return reviews
+
+@api_router.post("/partner/reviews/{review_id}/reply")
+async def reply_to_review(review_id: str, payload: ReviewReply, user: dict = Depends(require_partner)):
+    """Le fournisseur repond a un avis laisse sur un de ses groupages."""
+    if user["role"] != "supplier":
+        raise HTTPException(status_code=403, detail="Only suppliers can reply to reviews")
+
+    review = await db.groupage_reviews.find_one({"review_id": review_id})
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    if review.get("supplier_id") != user["entity_id"]:
+        raise HTTPException(status_code=403, detail="This review does not concern your groupages")
+
+    await db.groupage_reviews.update_one(
+        {"review_id": review_id},
+        {"$set": {
+            "supplier_reply": payload.reply,
+            "supplier_reply_at": datetime.now(timezone.utc).isoformat()
+        }}
+    )
+    return {"message": "Reply saved"}
 
 # ========================
 # SIMULATION ROUTE (Public)
@@ -682,29 +1069,31 @@ async def simulate_pricing(request: Request):
     unit_price_cny = float(data.get("unit_price_cny", 0))
     unit_weight_kg = float(data.get("unit_weight_kg", 0.5))
     quantity = int(data.get("quantity", 1))
-    transport_price_per_kg_cny = float(data.get("transport_price_per_kg_cny", 45))  # Default transport price
-    
+    # Prix transport indicatif au kg en FCFA (ordre de grandeur aerien normal)
+    transport_price_per_kg_fcfa = float(data.get("transport_price_per_kg_fcfa", 9000))
+
     if unit_price_cny <= 0 or quantity <= 0:
         raise HTTPException(status_code=400, detail="Invalid input values")
-    
+
     # Calcul prix Solo
-    solo = calculate_solo_price(unit_price_cny, unit_weight_kg, quantity, transport_price_per_kg_cny)
-    
+    solo = calculate_solo_price(unit_price_cny, unit_weight_kg, quantity, transport_price_per_kg_fcfa)
+
     # Estimation Groupage (simulation avec un groupe de 100 personnes)
     # Le prix groupé bénéficie de:
     # 1. Négociation volume sur le prix unitaire (-10%)
     # 2. Réduction transport groupé (-40%)
     estimated_group_size = 100
     share_percentage = (quantity / estimated_group_size) * 100
-    
+
     # Prix négocié en gros (10% de réduction sur le prix unitaire)
     negotiated_unit_price = unit_price_cny * 0.90
-    
-    # Transport groupé (40% moins cher)
-    discounted_transport = transport_price_per_kg_cny * 0.60
-    
+
+    # Transport groupé (40% moins cher), reconverti en CNY pour rester homogene
+    # avec total_order_price_cny attendu par calculate_groupage_price
+    discounted_transport_cny = (transport_price_per_kg_fcfa * 0.60) / CNY_TO_FCFA
+
     # Prix total de la commande groupée
-    total_order_price_cny = (negotiated_unit_price * estimated_group_size) + (unit_weight_kg * estimated_group_size * discounted_transport)
+    total_order_price_cny = (negotiated_unit_price * estimated_group_size) + (unit_weight_kg * estimated_group_size * discounted_transport_cny)
     
     groupage = calculate_groupage_price(total_order_price_cny, estimated_group_size, quantity)
     
@@ -1220,12 +1609,38 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
     transitaire = await db.transitaires.find_one({"transitaire_id": groupage_data.transitaire_id}, {"_id": 0})
     if not transitaire:
         raise HTTPException(status_code=400, detail="Transitaire not found")
-    
+
     if not transitaire.get("is_active", True):
         raise HTTPException(status_code=400, detail="Transitaire is not active")
-    
+
+    # Resoudre le prix transport au kg (FCFA) : soit via l'option choisie sur les
+    # nouvelles fiches, soit via l'ancien champ CNY des fiches historiques.
+    transport_price_per_kg_fcfa = None
+    shipping_option = None
+    options = transitaire.get("shipping_options") or []
+    if groupage_data.shipping_option_id:
+        shipping_option = next((o for o in options if o.get("option_id") == groupage_data.shipping_option_id), None)
+        if not shipping_option:
+            raise HTTPException(status_code=400, detail="Shipping option not found for this transitaire")
+        if shipping_option.get("unit") != "kg":
+            raise HTTPException(
+                status_code=400,
+                detail="Le comparateur de prix necessite une option facturee au kg (les options au CBM ne sont pas encore supportees pour les groupages)"
+            )
+        transport_price_per_kg_fcfa = shipping_option["price_fcfa"]
+    elif transitaire.get("shipping_price_per_kg_cny") is not None:
+        transport_price_per_kg_fcfa = transitaire["shipping_price_per_kg_cny"] * CNY_TO_FCFA
+    else:
+        raise HTTPException(status_code=400, detail="Selectionnez une option de transport pour ce transitaire")
+
+    # Fournisseur lie (facultatif) : verifie qu'il existe si fourni
+    if groupage_data.supplier_id:
+        supplier = await db.suppliers.find_one({"supplier_id": groupage_data.supplier_id})
+        if not supplier:
+            raise HTTPException(status_code=400, detail="Supplier not found")
+
     groupage_id = f"grp_{uuid.uuid4().hex[:12]}"
-    
+
     groupage_doc = {
         "groupage_id": groupage_id,
         "title": groupage_data.title,
@@ -1235,6 +1650,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "product_category_id": groupage_data.product_category_id,
         "product_url": groupage_data.product_url,
         "product_image_url": groupage_data.product_image_url,
+        "supplier_id": groupage_data.supplier_id,
         "supplier_name": groupage_data.supplier_name,
         "supplier_location": groupage_data.supplier_location,
         "supplier_rating": groupage_data.supplier_rating,
@@ -1247,7 +1663,12 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "transitaire_name": transitaire["name"],
         "transitaire_location": f"{transitaire['city']}, {transitaire['country']}",
         "transitaire_license": transitaire["license_number"],
-        "transport_price_per_kg_cny": transitaire["shipping_price_per_kg_cny"],
+        "transport_price_per_kg_fcfa": transport_price_per_kg_fcfa,
+        "shipping_option_id": groupage_data.shipping_option_id,
+        "shipping_option_label": shipping_option.get("label") if shipping_option else None,
+        # Suivi d'expedition
+        "shipment_status": "preparation",
+        "shipment_timeline": [],
         # Pricing
         "unit_price_cny": groupage_data.unit_price_cny,
         "unit_weight_kg": groupage_data.unit_weight_kg,

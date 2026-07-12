@@ -3,15 +3,18 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
-import { 
-  Package, Clock, Users, MapPin, Star, Shield, FileText, 
+import {
+  Package, Clock, Users, MapPin, Star, Shield, FileText,
   MessageCircle, Send, Loader2, CheckCircle, AlertCircle,
   CreditCard, ExternalLink, Calculator, TrendingDown, Scale,
-  Download, Link as LinkIcon, Share2
+  Download, Link as LinkIcon, Share2, Truck
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
 import { api } from '@/lib/api';
+import { phaseLabel } from '@/pages/PartnerPage';
+
+const SHIPMENT_PHASES = ['preparation', 'picked_up', 'in_transit', 'customs', 'arrived', 'delivered'];
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const SOCKET_PATH = '/api/socket.io';
@@ -463,22 +466,24 @@ const GroupageDetailPage = () => {
           <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg overflow-hidden" data-testid="tabs-section">
             {/* Tab Headers */}
             <div className="flex border-b border-[#2A2A2A] overflow-x-auto">
-              {['comparator', 'chat', 'documents', 'members'].map(tab => (
+              {['comparator', 'tracking', 'chat', 'documents', 'members'].map(tab => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
                   className={`flex-1 min-w-[120px] px-4 py-4 text-center transition-colors whitespace-nowrap ${
-                    activeTab === tab 
-                      ? 'bg-[#1A1A1A] text-[#D4AF37] border-b-2 border-[#D4AF37]' 
+                    activeTab === tab
+                      ? 'bg-[#1A1A1A] text-[#D4AF37] border-b-2 border-[#D4AF37]'
                       : 'text-[#A1A1AA] hover:bg-[#1A1A1A]'
                   }`}
                   data-testid={`tab-${tab}`}
                 >
                   {tab === 'comparator' && <Calculator className="w-4 h-4 inline mr-2" />}
+                  {tab === 'tracking' && <Truck className="w-4 h-4 inline mr-2" />}
                   {tab === 'chat' && <MessageCircle className="w-4 h-4 inline mr-2" />}
                   {tab === 'documents' && <FileText className="w-4 h-4 inline mr-2" />}
                   {tab === 'members' && <Users className="w-4 h-4 inline mr-2" />}
                   {tab === 'comparator' && (i18n.language === 'fr' ? 'Comparateur' : 'Comparator')}
+                  {tab === 'tracking' && (i18n.language === 'fr' ? 'Suivi' : 'Tracking')}
                   {tab === 'chat' && t('groupage.chat')}
                   {tab === 'documents' && t('groupage.documents')}
                   {tab === 'members' && t('groupage.members')}
@@ -655,6 +660,11 @@ const GroupageDetailPage = () => {
                     {i18n.language === 'fr' ? 'Connexion' : 'Login'}
                   </button>
                 </div>
+              )}
+
+              {/* Tracking Tab */}
+              {activeTab === 'tracking' && (
+                <TrackingTab groupage={groupage} isMember={isMember} fr={i18n.language === 'fr'} />
               )}
 
               {/* Chat Tab */}
@@ -837,6 +847,191 @@ const GroupageDetailPage = () => {
         </div>
       </div>
     </Layout>
+  );
+};
+
+// Suivi de livraison : timeline des phases + avis post-livraison
+const TrackingTab = ({ groupage, isMember, fr }) => {
+  const currentPhase = groupage.shipment_status || 'preparation';
+  const currentIdx = SHIPMENT_PHASES.indexOf(currentPhase);
+  const timeline = groupage.shipment_timeline || [];
+
+  return (
+    <div data-testid="tracking-tab">
+      {/* Stepper */}
+      <div className="mb-8">
+        <h4 className="font-medium mb-4 flex items-center gap-2">
+          <Truck className="w-5 h-5 text-[#D4AF37]" />
+          {fr ? 'Où en est votre commande ?' : 'Where is your order?'}
+        </h4>
+        <div className="space-y-0">
+          {SHIPMENT_PHASES.map((phase, idx) => {
+            const done = idx < currentIdx;
+            const current = idx === currentIdx;
+            const entry = [...timeline].reverse().find(e => e.phase === phase);
+            return (
+              <div key={phase} className="flex gap-3">
+                <div className="flex flex-col items-center">
+                  <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                    done ? 'bg-[#22C55E]' : current ? 'bg-[#D4AF37]' : 'bg-[#1A1A1A] border border-[#2A2A2A]'
+                  }`}>
+                    {done ? (
+                      <CheckCircle className="w-4 h-4 text-white" />
+                    ) : (
+                      <span className={`text-xs font-semibold ${current ? 'text-[#0A0A0A]' : 'text-[#71717A]'}`}>{idx + 1}</span>
+                    )}
+                  </div>
+                  {idx < SHIPMENT_PHASES.length - 1 && (
+                    <div className={`w-0.5 h-8 ${done ? 'bg-[#22C55E]' : 'bg-[#2A2A2A]'}`} />
+                  )}
+                </div>
+                <div className="pb-4">
+                  <p className={`font-medium ${current ? 'text-[#D4AF37]' : done ? 'text-white' : 'text-[#71717A]'}`}>
+                    {phaseLabel(phase, fr ? 'fr' : 'en')}
+                  </p>
+                  {entry && (
+                    <p className="text-xs text-[#71717A]">
+                      {new Date(entry.at).toLocaleString(fr ? 'fr-FR' : 'en-US')}
+                      {entry.note && ` · ${entry.note}`}
+                    </p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Avis post-livraison */}
+      <ReviewsSection groupage={groupage} isMember={isMember} fr={fr} delivered={currentPhase === 'delivered'} />
+    </div>
+  );
+};
+
+const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
+  const { user, isAuthenticated } = useAuth();
+  const [reviews, setReviews] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  const fetchReviews = async () => {
+    try {
+      const response = await api.get(`/groupages/${groupage.groupage_id}/reviews`);
+      setReviews(response.data);
+    } catch (error) {
+      // non connecte : pas d'avis visibles
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchReviews();
+    } else {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated]);
+
+  const alreadyReviewed = reviews.some(r => r.user_id === user?.user_id);
+  const canReview = isMember && delivered && !alreadyReviewed;
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    try {
+      await api.post(`/groupages/${groupage.groupage_id}/reviews`, {
+        rating,
+        comment: comment.trim() || null
+      });
+      toast.success(fr ? 'Merci pour votre avis!' : 'Thanks for your review!');
+      setComment('');
+      fetchReviews();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!isAuthenticated) return null;
+
+  return (
+    <div>
+      <h4 className="font-medium mb-4 flex items-center gap-2">
+        <Star className="w-5 h-5 text-[#D4AF37]" />
+        {fr ? 'Avis des membres' : 'Member reviews'}
+      </h4>
+
+      {canReview && (
+        <div className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-lg p-4 mb-4" data-testid="review-form">
+          <p className="text-sm text-[#A1A1AA] mb-3">
+            {fr ? 'Votre commande est livrée — partagez votre expérience avec ce fournisseur.'
+                : 'Your order is delivered — share your experience with this supplier.'}
+          </p>
+          <div className="flex items-center gap-1 mb-3">
+            {[1, 2, 3, 4, 5].map(n => (
+              <button key={n} onClick={() => setRating(n)} type="button">
+                <Star className={`w-6 h-6 ${n <= rating ? 'text-[#D4AF37] fill-[#D4AF37]' : 'text-[#2A2A2A]'}`} />
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder={fr ? 'Commentaire (optionnel)...' : 'Comment (optional)...'}
+              className="input-dark flex-1 px-4 py-2 rounded-md"
+            />
+            <button
+              onClick={handleSubmit}
+              disabled={submitting}
+              className="btn-gold px-4 py-2 rounded-md disabled:opacity-50"
+              data-testid="submit-review-btn"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : (fr ? 'Publier' : 'Post')}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <Loader2 className="w-5 h-5 animate-spin text-[#71717A]" />
+      ) : reviews.length === 0 ? (
+        <p className="text-sm text-[#71717A]">
+          {delivered
+            ? (fr ? 'Aucun avis pour le moment.' : 'No reviews yet.')
+            : (fr ? 'Les avis seront ouverts une fois la commande livrée.' : 'Reviews open once the order is delivered.')}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {reviews.map(review => (
+            <div key={review.review_id} className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-md p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="font-medium text-sm">{review.user_name}</span>
+                <span className="flex items-center gap-0.5">
+                  {[1, 2, 3, 4, 5].map(n => (
+                    <Star key={n} className={`w-3.5 h-3.5 ${n <= review.rating ? 'text-[#D4AF37] fill-[#D4AF37]' : 'text-[#2A2A2A]'}`} />
+                  ))}
+                </span>
+              </div>
+              {review.comment && <p className="text-sm text-[#A1A1AA]">{review.comment}</p>}
+              {review.supplier_reply && (
+                <div className="mt-2 pl-3 border-l-2 border-[#D4AF37]/40">
+                  <p className="text-xs text-[#D4AF37] mb-0.5">
+                    {fr ? 'Réponse du fournisseur' : 'Supplier reply'}
+                  </p>
+                  <p className="text-sm text-[#A1A1AA]">{review.supplier_reply}</p>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 

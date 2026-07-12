@@ -15,9 +15,11 @@ import GroupageDetailPage from "@/pages/GroupageDetailPage";
 import DashboardPage from "@/pages/DashboardPage";
 import AdminPage from "@/pages/AdminPage";
 import PaymentSuccessPage from "@/pages/PaymentSuccessPage";
+import ChangePasswordPage from "@/pages/ChangePasswordPage";
+import PartnerPage from "@/pages/PartnerPage";
 
 // Protected Route Component
-const ProtectedRoute = ({ children, adminOnly = false }) => {
+const ProtectedRoute = ({ children, adminOnly = false, roles = null }) => {
   const { user, loading, isAuthenticated, isAdmin } = useAuth();
   const location = useLocation();
 
@@ -33,7 +35,16 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  // Mot de passe provisoire : on force le changement avant tout acces
+  if (user?.must_change_password && location.pathname !== "/change-password") {
+    return <Navigate to="/change-password" replace />;
+  }
+
   if (adminOnly && !isAdmin) {
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  if (roles && !roles.includes(user?.role)) {
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -61,7 +72,19 @@ const AppRouter = () => {
           <DashboardPage />
         </ProtectedRoute>
       } />
-      
+
+      <Route path="/change-password" element={
+        <ProtectedRoute>
+          <ChangePasswordPage />
+        </ProtectedRoute>
+      } />
+
+      <Route path="/partenaire" element={
+        <ProtectedRoute roles={['transitaire', 'supplier']}>
+          <PartnerPage />
+        </ProtectedRoute>
+      } />
+
       <Route path="/admin/*" element={
         <ProtectedRoute adminOnly>
           <AdminPage />
