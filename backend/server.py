@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -7,17 +7,21 @@ import os
 import math
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from pydantic import BaseModel, Field, ConfigDict, EmailStr, field_validator
 from typing import List, Optional, Dict, Any
 import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
-import httpx
 import socketio
 import cloudinary
 import cloudinary.utils
 import time
+from difflib import SequenceMatcher
+import re
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -36,7 +40,12 @@ cloudinary.config(
 )
 
 # JWT Configuration
-JWT_SECRET = os.environ.get("JWT_SECRET", "silkroute-secret-key-change-in-production")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "JWT_SECRET environment variable is required and must not be empty. "
+        "Generate one with `openssl rand -hex 32` and set it before starting the app."
+    )
 JWT_ALGORITHM = "HS256"
 
 import stripe
@@ -60,6 +69,11 @@ sio_user_sessions = {}  # sid -> {user_id, user_name} pour eviter le spoofing d'
 fastapi_app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
+# Rate limiting (protege /auth/login et /auth/register contre le brute-force)
+limiter = Limiter(key_func=get_remote_address)
+fastapi_app.state.limiter = limiter
+fastapi_app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ========================
 # MODELS
 # ========================
@@ -72,6 +86,13 @@ class UserCreate(BaseModel):
     location: Optional[str] = None
     language: str = "fr"
     buyer_profile: Optional[str] = None  # Profil d'acheteur
+
+    @field_validator("password")
+    @classmethod
+    def password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        return v
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -405,12 +426,26 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
 # AUTH ROUTES
 # ========================
 
+def set_auth_cookie(response: Response, token: str) -> None:
+    """Pose le JWT comme cookie httpOnly : inaccessible en JS, donc pas volable par une
+    injection XSS cote frontend (contrairement a un stockage en localStorage)."""
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=JWT_EXPIRATION_HOURS * 3600
+    )
+
 @api_router.post("/auth/register", response_model=TokenResponse)
-async def register(user_data: UserCreate):
+@limiter.limit("10/hour")
+async def register(request: Request, user_data: UserCreate, response: Response):
     existing = await db.users.find_one({"email": user_data.email})
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
-    
+
     user_id = f"user_{uuid.uuid4().hex[:12]}"
     user_doc = {
         "user_id": user_id,
@@ -429,97 +464,29 @@ async def register(user_data: UserCreate):
         "buyer_profile": user_data.buyer_profile,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.users.insert_one(user_doc)
     token = create_token(user_id)
+    set_auth_cookie(response, token)
     user_response = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     user_response["created_at"] = datetime.fromisoformat(user_response["created_at"])
-    
+
     return TokenResponse(access_token=token, user=UserResponse(**user_response))
 
 @api_router.post("/auth/login", response_model=TokenResponse)
-async def login(credentials: UserLogin):
+@limiter.limit("5/minute")
+async def login(request: Request, credentials: UserLogin, response: Response):
     user = await db.users.find_one({"email": credentials.email})
     if not user or not verify_password(credentials.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    
+
     token = create_token(user["user_id"])
+    set_auth_cookie(response, token)
     user_response = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     if isinstance(user_response["created_at"], str):
         user_response["created_at"] = datetime.fromisoformat(user_response["created_at"])
-    
-    return TokenResponse(access_token=token, user=UserResponse(**user_response))
 
-@api_router.post("/auth/session")
-async def process_session(request: Request):
-    data = await request.json()
-    session_id = data.get("session_id")
-    
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id required")
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
-            headers={"X-Session-ID": session_id}
-        )
-        
-        if response.status_code != 200:
-            raise HTTPException(status_code=401, detail="Invalid session")
-        
-        auth_data = response.json()
-    
-    user = await db.users.find_one({"email": auth_data["email"]}, {"_id": 0})
-    
-    if not user:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        user_doc = {
-            "user_id": user_id,
-            "email": auth_data["email"],
-            "name": auth_data["name"],
-            "picture": auth_data.get("picture"),
-            "language": "fr",
-            "role": "member",
-            "kyc_status": "pending",
-            "kyc_documents": {},
-            "mobile_money": {},
-            "cgu_accepted": False,
-            "buyer_profile": None,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.users.insert_one(user_doc)
-        user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    
-    session_token = auth_data["session_token"]
-    await db.user_sessions.insert_one({
-        "user_id": user["user_id"],
-        "session_token": session_token,
-        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat()
-    })
-    
-    response = JSONResponse(content={
-        "user_id": user["user_id"],
-        "email": user["email"],
-        "name": user["name"],
-        "picture": user.get("picture"),
-        "role": user.get("role", "member"),
-        "kyc_status": user.get("kyc_status", "pending"),
-        "language": user.get("language", "fr"),
-        "buyer_profile": user.get("buyer_profile")
-    })
-    
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-        max_age=7 * 24 * 60 * 60
-    )
-    
-    return response
+    return TokenResponse(access_token=token, user=UserResponse(**user_response))
 
 @api_router.get("/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
@@ -535,7 +502,11 @@ async def get_me(user: dict = Depends(get_current_user)):
         "location": user.get("location"),
         "mobile_money": user.get("mobile_money"),
         "cgu_accepted": user.get("cgu_accepted", False),
-        "buyer_profile": user.get("buyer_profile")
+        "buyer_profile": user.get("buyer_profile"),
+        # Jeton de courte duree expose au JS uniquement pour l'authentification du
+        # websocket (Socket.IO ne peut pas lire le cookie httpOnly dans son handshake).
+        # Ne remplace pas le cookie comme mecanisme d'authentification principal.
+        "ws_token": create_token(user["user_id"])
     }
 
 @api_router.post("/auth/logout")
@@ -757,9 +728,55 @@ async def simulate_pricing(request: Request):
 # PRODUCT PROPOSALS
 # ========================
 
+def _normalize_url(url: str) -> str:
+    return re.sub(r'^https?://(www\.)?', '', url.strip().lower()).rstrip('/')
+
+def _titles_similar(a: str, b: str) -> bool:
+    return SequenceMatcher(None, a.strip().lower(), b.strip().lower()).ratio() >= 0.8
+
+async def find_similar_proposal(product_url: str, title: str) -> Optional[dict]:
+    """Cherche une proposition existante (non rejetee) pour le meme produit :
+    meme lien produit (normalise) ou titre tres proche. Sert a regrouper l'interet
+    des membres au lieu de multiplier les doublons."""
+    candidates = await db.product_proposals.find(
+        {"status": {"$in": ["pending", "approved", "featured"]}}, {"_id": 0}
+    ).to_list(500)
+
+    target_url = _normalize_url(product_url)
+    for candidate in candidates:
+        if _normalize_url(candidate["product_url"]) == target_url:
+            return candidate
+        if _titles_similar(candidate["title"], title):
+            return candidate
+    return None
+
 @api_router.post("/proposals")
 async def create_proposal(proposal: ProductProposal, user: dict = Depends(get_current_user)):
-    """Membre ou admin propose un produit"""
+    """Membre ou admin propose un produit. Si une proposition similaire existe deja
+    (meme lien ou titre proche), l'utilisateur est simplement ajoute comme "interesse"
+    dessus plutot que de creer un doublon."""
+    existing = await find_similar_proposal(proposal.product_url, proposal.title)
+    if existing:
+        interested = existing.get("interested_user_ids", [])
+        if user["user_id"] not in interested:
+            await db.product_proposals.update_one(
+                {"proposal_id": existing["proposal_id"]},
+                {
+                    "$addToSet": {"interested_user_ids": user["user_id"]},
+                    "$inc": {"interested_count": 1}
+                }
+            )
+            interested_count = existing.get("interested_count", 1) + 1
+        else:
+            interested_count = existing.get("interested_count", 1)
+        return {
+            "proposal_id": existing["proposal_id"],
+            "status": existing["status"],
+            "merged": True,
+            "interested_count": interested_count,
+            "message": "Une proposition similaire existe deja, votre interet y a ete ajoute."
+        }
+
     proposal_id = f"prop_{uuid.uuid4().hex[:12]}"
     proposal_doc = {
         "proposal_id": proposal_id,
@@ -768,21 +785,24 @@ async def create_proposal(proposal: ProductProposal, user: dict = Depends(get_cu
         "user_role": user.get("role", "member"),
         **proposal.model_dump(),
         "status": "pending",  # pending, approved, rejected, featured
+        "interested_user_ids": [user["user_id"]],
+        "interested_count": 1,
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.product_proposals.insert_one(proposal_doc)
-    return {"proposal_id": proposal_id, "status": "pending"}
+    return {"proposal_id": proposal_id, "status": "pending", "merged": False, "interested_count": 1}
 
 @api_router.get("/proposals")
 async def list_proposals(status: Optional[str] = None, user: dict = Depends(get_current_user)):
-    """Liste les propositions (admin voit tout, membre voit les siennes)"""
+    """Liste les propositions (admin voit tout, membre voit celles qu'il a creees ou
+    pour lesquelles il a exprime de l'interet)"""
     query = {}
     if user.get("role") != "admin":
-        query["user_id"] = user["user_id"]
+        query["interested_user_ids"] = user["user_id"]
     if status:
         query["status"] = status
-    
-    proposals = await db.product_proposals.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+    proposals = await db.product_proposals.find(query, {"_id": 0}).sort("interested_count", -1).to_list(100)
     return proposals
 
 @api_router.put("/admin/proposals/{proposal_id}")
@@ -1094,40 +1114,43 @@ async def get_payment_status(session_id: str, user: dict = Depends(get_current_u
 async def stripe_webhook(request: Request):
     body = await request.body()
     signature = request.headers.get("Stripe-Signature")
-    
+
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="STRIPE_WEBHOOK_SECRET is not configured")
+
+    # Verification de signature isolee : un echec ici doit remonter en 400 pour que
+    # Stripe le journalise/retente et qu'on soit alerte d'un probleme de config,
+    # plutot que d'etre avale silencieusement derriere un 200 "received".
     try:
-        if not STRIPE_WEBHOOK_SECRET:
-            raise HTTPException(status_code=500, detail="STRIPE_WEBHOOK_SECRET is not configured")
-        
         event = stripe.Webhook.construct_event(body, signature, STRIPE_WEBHOOK_SECRET)
-        
-        if event["type"] == "checkout.session.completed":
-            session_obj = event["data"]["object"]
-            session_id = session_obj["id"]
-            payment_status = session_obj.get("payment_status")
-            
-            if payment_status == "paid":
-                payment = await db.payment_transactions.find_one({"session_id": session_id})
-                if payment and payment["status"] != "completed":
-                    await db.payment_transactions.update_one(
-                        {"session_id": session_id},
-                        {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
+    except (ValueError, stripe.error.SignatureVerificationError) as e:
+        logger.error(f"Stripe webhook signature verification failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    if event["type"] == "checkout.session.completed":
+        session_obj = event["data"]["object"]
+        session_id = session_obj["id"]
+        payment_status = session_obj.get("payment_status")
+
+        if payment_status == "paid":
+            payment = await db.payment_transactions.find_one({"session_id": session_id})
+            if payment and payment["status"] != "completed":
+                await db.payment_transactions.update_one(
+                    {"session_id": session_id},
+                    {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
+                )
+                if payment["payment_type"] == "caution":
+                    await db.groupage_members.update_one(
+                        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
+                        {"$set": {"caution_paid": True}}
                     )
-                    if payment["payment_type"] == "caution":
-                        await db.groupage_members.update_one(
-                            {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                            {"$set": {"caution_paid": True}}
-                        )
-                    else:
-                        await db.groupage_members.update_one(
-                            {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                            {"$set": {"solde_paid": True}}
-                        )
-        
-        return {"received": True}
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return {"received": True}
+                else:
+                    await db.groupage_members.update_one(
+                        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
+                        {"$set": {"solde_paid": True}}
+                    )
+
+    return {"received": True}
 
 # ========================
 # ADMIN ROUTES
@@ -1405,13 +1428,29 @@ async def root():
 
 fastapi_app.include_router(api_router)
 
+_cors_origins_env = os.environ.get('CORS_ORIGINS', '')
+CORS_ORIGINS = [o.strip() for o in _cors_origins_env.split(',') if o.strip()]
+if not CORS_ORIGINS:
+    logger.warning(
+        "CORS_ORIGINS is not set - no cross-origin browser requests will be allowed. "
+        "Set it to your frontend URL(s), comma-separated."
+    )
+
 fastapi_app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@fastapi_app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
 
 socket_app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path='/api/socket.io')
 app = socket_app

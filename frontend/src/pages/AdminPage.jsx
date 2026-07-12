@@ -1,17 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
-import { 
-  LayoutDashboard, AlertTriangle, Package, Users, Shield, 
-  Plus, Check, X, Eye, ChevronRight, Loader2
+import {
+  LayoutDashboard, AlertTriangle, Package, Users, Shield,
+  Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb
 } from 'lucide-react';
 import { toast } from 'sonner';
-import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { api } from '@/lib/api';
 
 const AdminPage = () => {
   const location = useLocation();
@@ -21,6 +17,7 @@ const AdminPage = () => {
     { path: '/admin', label: t('admin.overview'), icon: LayoutDashboard },
     { path: '/admin/warnings', label: t('admin.warnings'), icon: AlertTriangle },
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
+    { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
     { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield }
   ];
 
@@ -56,6 +53,7 @@ const AdminPage = () => {
               <Route index element={<AdminOverview />} />
               <Route path="warnings" element={<AdminWarnings />} />
               <Route path="groupages" element={<AdminGroupages />} />
+              <Route path="proposals" element={<AdminProposals />} />
               <Route path="kyc" element={<AdminKYC />} />
             </Routes>
           </main>
@@ -68,16 +66,13 @@ const AdminPage = () => {
 // Admin Overview Component
 const AdminOverview = () => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await axios.get(`${API}/admin/stats`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await api.get('/admin/stats');
         setStats(response.data);
       } catch (error) {
         console.error('Error fetching stats:', error);
@@ -86,7 +81,7 @@ const AdminOverview = () => {
       }
     };
     fetchStats();
-  }, [token]);
+  }, []);
 
   if (loading) {
     return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
@@ -137,16 +132,13 @@ const StatCard = ({ label, value, color, icon: Icon }) => (
 // Admin Warnings Component
 const AdminWarnings = () => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
   const [warnings, setWarnings] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchWarnings = async () => {
       try {
-        const response = await axios.get(`${API}/admin/warnings`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await api.get('/admin/warnings');
         setWarnings(response.data);
       } catch (error) {
         console.error('Error fetching warnings:', error);
@@ -155,7 +147,7 @@ const AdminWarnings = () => {
       }
     };
     fetchWarnings();
-  }, [token]);
+  }, []);
 
   const severityColors = {
     high: 'badge-danger',
@@ -217,19 +209,26 @@ const AdminWarnings = () => {
 // Admin Groupages Component
 const AdminGroupages = () => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
+  const location = useLocation();
   const [groupages, setGroupages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   useEffect(() => {
     fetchGroupages();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, []);
+
+  // Ouvre directement la modale pre-remplie si on arrive depuis "Creer un groupage"
+  // sur l'onglet Propositions.
+  useEffect(() => {
+    if (location.state?.prefill) {
+      setShowCreateModal(true);
+    }
+  }, [location.state]);
 
   const fetchGroupages = async () => {
     try {
-      const response = await axios.get(`${API}/groupages`);
+      const response = await api.get('/groupages');
       setGroupages(response.data);
     } catch (error) {
       console.error('Error fetching groupages:', error);
@@ -293,7 +292,8 @@ const AdminGroupages = () => {
       </div>
 
       {showCreateModal && (
-        <CreateGroupageModal 
+        <CreateGroupageModal
+          initialData={location.state?.prefill}
           onClose={() => setShowCreateModal(false)}
           onCreated={() => {
             setShowCreateModal(false);
@@ -306,20 +306,19 @@ const AdminGroupages = () => {
 };
 
 // Create Groupage Modal
-const CreateGroupageModal = ({ onClose, onCreated }) => {
+const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
   const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState([]);
   const [transitaires, setTransitaires] = useState([]);
 
   const [formData, setFormData] = useState({
-    title: '',
-    title_en: '',
+    title: initialData?.title || '',
+    title_en: initialData?.title_en || '',
     description: '',
     description_en: '',
-    product_category_id: '',
-    product_url: '',
+    product_category_id: initialData?.product_category_id || '',
+    product_url: initialData?.product_url || '',
     product_image_url: '',
     supplier_name: '',
     supplier_location: 'Guangzhou, China',
@@ -344,8 +343,8 @@ const CreateGroupageModal = ({ onClose, onCreated }) => {
     const loadOptions = async () => {
       try {
         const [catRes, transRes] = await Promise.all([
-          axios.get(`${API}/categories`),
-          axios.get(`${API}/transitaires`)
+          api.get('/categories'),
+          api.get('/transitaires')
         ]);
         setCategories(catRes.data);
         setTransitaires(transRes.data);
@@ -408,9 +407,7 @@ const CreateGroupageModal = ({ onClose, onCreated }) => {
           : null
       };
 
-      await axios.post(`${API}/admin/groupages`, payload, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.post('/admin/groupages', payload);
       toast.success(i18n.language === 'fr' ? 'Groupage créé!' : 'Groupage created!');
       onCreated();
     } catch (error) {
@@ -756,20 +753,16 @@ const CreateGroupageModal = ({ onClose, onCreated }) => {
 // Admin KYC Component
 const AdminKYC = () => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
   const [queue, setQueue] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchQueue();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
+  }, []);
 
   const fetchQueue = async () => {
     try {
-      const response = await axios.get(`${API}/admin/kyc/queue`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      const response = await api.get('/admin/kyc/queue');
       setQueue(response.data);
     } catch (error) {
       console.error('Error fetching KYC queue:', error);
@@ -780,9 +773,7 @@ const AdminKYC = () => {
 
   const handleKycAction = async (userId, status) => {
     try {
-      await axios.put(`${API}/admin/kyc/${userId}`, { status }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.put(`/admin/kyc/${userId}`, { status });
       toast.success(i18n.language === 'fr' ? 'KYC mis à jour!' : 'KYC updated!');
       fetchQueue();
     } catch (error) {
@@ -879,6 +870,171 @@ const AdminKYC = () => {
                   )}
                 </div>
               )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Admin Proposals Component
+const AdminProposals = () => {
+  const { i18n } = useTranslation();
+  const navigate = useNavigate();
+  const [proposals, setProposals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('pending');
+
+  useEffect(() => {
+    fetchProposals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
+
+  const fetchProposals = async () => {
+    setLoading(true);
+    try {
+      const response = await api.get('/proposals', { params: filter ? { status: filter } : {} });
+      setProposals(response.data);
+    } catch (error) {
+      console.error('Error fetching proposals:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStatusChange = async (proposalId, status) => {
+    try {
+      await api.put(`/admin/proposals/${proposalId}`, { status });
+      toast.success(i18n.language === 'fr' ? 'Proposition mise à jour!' : 'Proposal updated!');
+      fetchProposals();
+    } catch (error) {
+      toast.error(i18n.language === 'fr' ? 'Erreur' : 'Error');
+    }
+  };
+
+  const handleCreateGroupageFromProposal = (proposal) => {
+    navigate('/admin/groupages', {
+      state: {
+        prefill: {
+          title: proposal.title,
+          title_en: proposal.title,
+          product_url: proposal.product_url,
+          product_category_id: proposal.category_id || ''
+        }
+      }
+    });
+  };
+
+  const statusFilters = ['pending', 'approved', 'featured', 'rejected'];
+  const statusColors = {
+    pending: 'badge-warning',
+    approved: 'badge-success',
+    featured: 'badge-gold',
+    rejected: 'badge-danger'
+  };
+
+  if (loading) {
+    return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-proposals">
+      <h1 className="font-['Bebas_Neue'] text-3xl mb-2">
+        {i18n.language === 'fr' ? 'Propositions des membres' : 'Member proposals'}
+      </h1>
+      <p className="text-[#71717A] text-sm mb-6">
+        {i18n.language === 'fr'
+          ? "Produits proposes par les membres. Les propositions similaires sont regroupees : le nombre d'interesses aide a prioriser."
+          : 'Products proposed by members. Similar proposals are merged: the interested count helps prioritize.'}
+      </p>
+
+      <div className="flex gap-2 mb-6">
+        {statusFilters.map(s => (
+          <button
+            key={s}
+            onClick={() => setFilter(s)}
+            className={`px-4 py-2 rounded-md text-sm transition-colors ${
+              filter === s ? 'bg-[#D4AF37] text-[#0A0A0A]' : 'bg-[#1A1A1A] text-[#A1A1AA] hover:bg-[#2A2A2A]'
+            }`}
+          >
+            {s}
+          </button>
+        ))}
+      </div>
+
+      {proposals.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center">
+          <Lightbulb className="w-12 h-12 text-[#2A2A2A] mx-auto mb-4" />
+          <p className="text-[#A1A1AA]">
+            {i18n.language === 'fr' ? 'Aucune proposition dans ce statut' : 'No proposals in this status'}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {proposals.map(p => (
+            <div key={p.proposal_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="font-semibold truncate">{p.title}</h3>
+                    <span className={`${statusColors[p.status]} px-2 py-0.5 rounded text-xs shrink-0`}>
+                      {p.status}
+                    </span>
+                  </div>
+                  <a
+                    href={p.product_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-[#D4AF37] hover:underline break-all"
+                  >
+                    {p.product_url}
+                  </a>
+                  {p.description && (
+                    <p className="text-sm text-[#71717A] mt-1">{p.description}</p>
+                  )}
+                  <div className="flex items-center gap-4 mt-2 text-xs text-[#71717A]">
+                    <span className="flex items-center gap-1">
+                      <Users className="w-3.5 h-3.5" />
+                      {p.interested_count || 1} {i18n.language === 'fr' ? 'interesse(s)' : 'interested'}
+                    </span>
+                    <span>{i18n.language === 'fr' ? 'Propose par' : 'Proposed by'} {p.user_name}</span>
+                    {p.estimated_unit_price_cny && (
+                      <span>{p.estimated_unit_price_cny} CNY/{i18n.language === 'fr' ? 'unité' : 'unit'}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 shrink-0">
+                  {p.status === 'pending' && (
+                    <>
+                      <button
+                        onClick={() => handleStatusChange(p.proposal_id, 'approved')}
+                        className="btn-gold px-3 py-1.5 rounded-md text-xs flex items-center gap-1"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        {i18n.language === 'fr' ? 'Valider' : 'Approve'}
+                      </button>
+                      <button
+                        onClick={() => handleStatusChange(p.proposal_id, 'rejected')}
+                        className="bg-[#EF4444] text-white px-3 py-1.5 rounded-md text-xs flex items-center gap-1"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        {i18n.language === 'fr' ? 'Rejeter' : 'Reject'}
+                      </button>
+                    </>
+                  )}
+                  {p.status !== 'rejected' && (
+                    <button
+                      onClick={() => handleCreateGroupageFromProposal(p)}
+                      className="btn-outline px-3 py-1.5 rounded-md text-xs flex items-center gap-1"
+                    >
+                      <Package className="w-3.5 h-3.5" />
+                      {i18n.language === 'fr' ? 'Créer un groupage' : 'Create groupage'}
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
           ))}
         </div>

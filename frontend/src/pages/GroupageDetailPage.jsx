@@ -10,17 +10,16 @@ import {
   Download, Link as LinkIcon, Share2
 } from 'lucide-react';
 import { toast } from 'sonner';
-import axios from 'axios';
 import { io } from 'socket.io-client';
+import { api } from '@/lib/api';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
 const SOCKET_PATH = '/api/socket.io';
 
 const GroupageDetailPage = () => {
   const { id } = useParams();
   const { t, i18n } = useTranslation();
-  const { user, token, isAuthenticated } = useAuth();
+  const { user, wsToken, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   
   const [groupage, setGroupage] = useState(null);
@@ -40,37 +39,29 @@ const GroupageDetailPage = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const groupageRes = await axios.get(`${API}/groupages/${id}`);
+        const groupageRes = await api.get(`/groupages/${id}`);
         setGroupage(groupageRes.data);
 
         if (isAuthenticated) {
           // Le detail de prix (comparateur) est reserve aux utilisateurs connectes,
           // pour eviter que notre modele de pricing soit consultable librement par des tiers.
           try {
-            const pricingRes = await axios.get(`${API}/groupages/${id}/pricing?quantity=1`, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
+            const pricingRes = await api.get(`/groupages/${id}/pricing?quantity=1`);
             setPricing(pricingRes.data);
           } catch (e) {
             console.error('Error fetching pricing:', e);
           }
 
           const [membersRes, messagesRes] = await Promise.all([
-            axios.get(`${API}/groupages/${id}/members`, {
-              headers: { Authorization: `Bearer ${token}` }
-            }),
-            axios.get(`${API}/groupages/${id}/messages`, {
-              headers: { Authorization: `Bearer ${token}` }
-            })
+            api.get(`/groupages/${id}/members`),
+            api.get(`/groupages/${id}/messages`)
           ]);
           setMembers(membersRes.data);
           setMessages(messagesRes.data);
 
           // Fetch documents if member
           try {
-            const docsRes = await axios.get(`${API}/groupages/${id}/documents`, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
+            const docsRes = await api.get(`/groupages/${id}/documents`);
             setDocuments(docsRes.data);
           } catch (e) {
             // User is not a member, documents not accessible
@@ -85,25 +76,23 @@ const GroupageDetailPage = () => {
     };
 
     fetchData();
-  }, [id, token, isAuthenticated, t]);
+  }, [id, isAuthenticated, t]);
 
   // Update pricing when quantity changes (utilisateurs connectes uniquement)
   useEffect(() => {
-    if (quantity > 0 && id && isAuthenticated && token) {
-      axios.get(`${API}/groupages/${id}/pricing?quantity=${quantity}`, {
-        headers: { Authorization: `Bearer ${token}` }
-      })
+    if (quantity > 0 && id && isAuthenticated) {
+      api.get(`/groupages/${id}/pricing?quantity=${quantity}`)
         .then(res => setPricing(res.data))
         .catch(console.error);
     }
-  }, [quantity, id, isAuthenticated, token]);
+  }, [quantity, id, isAuthenticated]);
 
   // WebSocket connection
   useEffect(() => {
-    if (!isAuthenticated || !id || !token) return;
+    if (!isAuthenticated || !id || !wsToken) return;
 
-    socketRef.current = io(BACKEND_URL, { path: SOCKET_PATH, auth: { token } });
-    
+    socketRef.current = io(BACKEND_URL, { path: SOCKET_PATH, auth: { token: wsToken } });
+
     socketRef.current.on('connect', () => {
       socketRef.current.emit('join_room', { room_id: id });
     });
@@ -121,7 +110,7 @@ const GroupageDetailPage = () => {
         socketRef.current.disconnect();
       }
     };
-  }, [isAuthenticated, id, token]);
+  }, [isAuthenticated, id, wsToken]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -156,20 +145,16 @@ const GroupageDetailPage = () => {
 
     setJoining(true);
     try {
-      await axios.post(`${API}/groupages/${id}/join`, { quantity }, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
+      await api.post(`/groupages/${id}/join`, { quantity });
       toast.success(i18n.language === 'fr' ? 'Groupage rejoint!' : 'Joined groupage!');
-      
+
       const origin = window.location.origin;
-      const paymentRes = await axios.post(`${API}/payments/checkout`, {
+      const paymentRes = await api.post('/payments/checkout', {
         groupage_id: id,
         payment_type: 'caution',
         origin_url: origin
-      }, {
-        headers: { Authorization: `Bearer ${token}` }
       });
-      
+
       window.location.href = paymentRes.data.url;
     } catch (error) {
       console.error('Join error:', error);

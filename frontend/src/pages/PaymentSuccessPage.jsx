@@ -1,17 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
 import { CheckCircle, Loader2, XCircle } from 'lucide-react';
-import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { api } from '@/lib/api';
 
 const PaymentSuccessPage = () => {
   const { t, i18n } = useTranslation();
-  const { token } = useAuth();
   const [searchParams] = useSearchParams();
   const [status, setStatus] = useState('loading');
   const [paymentData, setPaymentData] = useState(null);
@@ -34,9 +29,7 @@ const PaymentSuccessPage = () => {
       }
 
       try {
-        const response = await axios.get(`${API}/payments/status/${sessionId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
+        const response = await api.get(`/payments/status/${sessionId}`);
 
         setPaymentData(response.data);
 
@@ -57,7 +50,7 @@ const PaymentSuccessPage = () => {
     };
 
     pollPaymentStatus();
-  }, [sessionId, token]);
+  }, [sessionId]);
 
   return (
     <Layout showFooter={false}>

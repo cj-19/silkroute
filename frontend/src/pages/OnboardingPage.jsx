@@ -9,13 +9,11 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { api } from '@/lib/api';
 
 const OnboardingPage = () => {
   const { t, i18n } = useTranslation();
-  const { user, token, updateUser } = useAuth();
+  const { user, updateUser } = useAuth();
   const navigate = useNavigate();
   
   const [step, setStep] = useState(1);
@@ -66,12 +64,6 @@ const OnboardingPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Helper: build auth config supporting both JWT (email/password) and cookie session (Google OAuth)
-  const authConfig = () => ({
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    withCredentials: true
-  });
-
   const extractErrMsg = (error, fallback) => {
     const detail = error?.response?.data?.detail;
     if (typeof detail === 'string') return detail;
@@ -82,7 +74,7 @@ const OnboardingPage = () => {
   const handleProfileSubmit = async () => {
     setLoading(true);
     try {
-      await axios.put(`${API}/users/profile`, profileData, authConfig());
+      await api.put('/users/profile', profileData);
       updateUser(profileData);
       setStep(3);
     } catch (error) {
@@ -95,7 +87,7 @@ const OnboardingPage = () => {
   const handleMobileMoneySubmit = async () => {
     setLoading(true);
     try {
-      await axios.put(`${API}/users/profile`, { mobile_money: mobileMoneyData }, authConfig());
+      await api.put('/users/profile', { mobile_money: mobileMoneyData });
       setStep(4);
     } catch (error) {
       toast.error(extractErrMsg(error));
@@ -106,7 +98,7 @@ const OnboardingPage = () => {
 
   const uploadToCloudinary = async (file, folder) => {
     // Get signature from backend
-    const sigResponse = await axios.get(`${API}/cloudinary/signature?folder=${folder}`, authConfig());
+    const sigResponse = await api.get(`/cloudinary/signature?folder=${folder}`);
     const sig = sigResponse.data;
 
     // Upload to Cloudinary
@@ -159,11 +151,11 @@ const OnboardingPage = () => {
       ]);
 
       // Update KYC in backend
-      await axios.put(`${API}/users/kyc`, {
+      await api.put('/users/kyc', {
         id_front_url: idFrontUrl,
         id_back_url: idBackUrl,
         selfie_url: selfieUrl
-      }, authConfig());
+      });
 
       updateUser({ kyc_status: 'submitted' });
       setStep(5);
@@ -183,7 +175,7 @@ const OnboardingPage = () => {
 
     setLoading(true);
     try {
-      await axios.put(`${API}/users/cgu`, {}, authConfig());
+      await api.put('/users/cgu', {});
       updateUser({ cgu_accepted: true });
       toast.success(i18n.language === 'fr' ? 'Inscription terminée!' : 'Registration complete!');
       navigate('/dashboard');

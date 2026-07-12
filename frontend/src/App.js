@@ -1,8 +1,7 @@
-import React, { useEffect, useRef, useState } from "react";
+import React from "react";
 import "@/App.css";
 import "@/i18n";
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { useTranslation } from "react-i18next";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "sonner";
 
@@ -16,46 +15,6 @@ import GroupageDetailPage from "@/pages/GroupageDetailPage";
 import DashboardPage from "@/pages/DashboardPage";
 import AdminPage from "@/pages/AdminPage";
 import PaymentSuccessPage from "@/pages/PaymentSuccessPage";
-
-// Auth Callback Component
-const AuthCallback = () => {
-  const navigate = useNavigate();
-  const { processGoogleCallback } = useAuth();
-  const hasProcessed = useRef(false);
-
-  useEffect(() => {
-    if (hasProcessed.current) return;
-    hasProcessed.current = true;
-
-    const hash = window.location.hash;
-    const sessionIdMatch = hash.match(/session_id=([^&]+)/);
-    
-    if (sessionIdMatch) {
-      const sessionId = sessionIdMatch[1];
-      processGoogleCallback(sessionId)
-        .then((user) => {
-          // Check if user needs onboarding
-          if (!user.cgu_accepted || user.kyc_status === 'pending') {
-            navigate('/onboarding', { state: { user }, replace: true });
-          } else {
-            navigate('/dashboard', { state: { user }, replace: true });
-          }
-        })
-        .catch((error) => {
-          console.error('Auth callback error:', error);
-          navigate('/login', { replace: true });
-        });
-    } else {
-      navigate('/login', { replace: true });
-    }
-  }, [navigate, processGoogleCallback]);
-
-  return (
-    <div className="min-h-screen bg-[#0A0A0A] flex items-center justify-center">
-      <div className="text-white text-xl">Connexion en cours...</div>
-    </div>
-  );
-};
 
 // Protected Route Component
 const ProtectedRoute = ({ children, adminOnly = false }) => {
@@ -81,21 +40,12 @@ const ProtectedRoute = ({ children, adminOnly = false }) => {
   return children;
 };
 
-// App Router with session_id detection
 const AppRouter = () => {
-  const location = useLocation();
-  
-  // Check URL fragment for session_id (synchronous, before useEffect)
-  if (location.hash?.includes('session_id=')) {
-    return <AuthCallback />;
-  }
-
   return (
     <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
-      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route path="/groupages" element={<GroupagesPage />} />
       <Route path="/groupages/:id" element={<GroupageDetailPage />} />
       <Route path="/payment/success" element={<PaymentSuccessPage />} />
