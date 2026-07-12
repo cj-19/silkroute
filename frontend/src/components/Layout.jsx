@@ -1,14 +1,25 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
-import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield } from 'lucide-react';
+import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield, Sun, Moon } from 'lucide-react';
 
 export const Navbar = () => {
   const { t, i18n } = useTranslation();
   const { user, isAuthenticated, isAdmin, logout } = useAuth();
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Theme clair/sombre : persiste dans localStorage, applique via la classe
+  // `light` sur <html> (voir App.css). Sombre par defaut.
+  const [theme, setTheme] = useState(() => localStorage.getItem('silkroute_theme') || 'dark');
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('light', theme === 'light');
+    localStorage.setItem('silkroute_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
 
   // Get clean language code (fr or en)
   const currentLang = i18n.language?.substring(0, 2).toLowerCase() || 'fr';
@@ -68,8 +79,20 @@ export const Navbar = () => {
 
           {/* Right Side */}
           <div className="flex items-center gap-4">
+            {/* Theme Toggle */}
+            <button
+              onClick={toggleTheme}
+              className="p-2 rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
+              title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
+              data-testid="theme-toggle"
+            >
+              {theme === 'dark'
+                ? <Sun className="w-4 h-4 text-[#A1A1AA]" />
+                : <Moon className="w-4 h-4 text-[#A1A1AA]" />}
+            </button>
+
             {/* Language Toggle */}
-            <button 
+            <button
               onClick={toggleLanguage}
               className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
               data-testid="language-toggle"

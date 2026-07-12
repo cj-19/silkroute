@@ -344,3 +344,80 @@ h1, h2, h3, h4, h5, h6, .heading {
   border-style: dashed;
   border-color: var(--border-color);
 }
+
+/* ========================================================================
+   MODE CLAIR
+   Le theme sombre est celui par defaut. La classe `light` sur <html>
+   (a) redefinit les variables du design system, et (b) surcharge les
+   classes Tailwind arbitraires codees en dur dans les pages, pour ne pas
+   avoir a reecrire chaque composant.
+   Les elements marques [data-theme-fixed] (ex: hero avec image sombre)
+   conservent leur rendu sombre dans les deux modes.
+   ======================================================================== */
+html.light {
+  --bg-primary: #F6F5F1;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #ECEAE3;
+  --border-color: #E0DED6;
+  --text-primary: #191919;
+  --text-secondary: #52525B;
+  --text-muted: #6B7280;
+  --accent-gold: #A98518;
+  --accent-gold-hover: #8F6F12;
+  --accent-gold-muted: rgba(169, 133, 24, 0.12);
+}
+
+/* Fonds */
+html.light .bg-\[\#0A0A0A\]:not([data-theme-fixed] *) { background-color: var(--bg-primary); }
+html.light .bg-\[\#141414\]:not([data-theme-fixed] *) { background-color: var(--bg-surface); }
+html.light .bg-\[\#1A1A1A\]:not([data-theme-fixed] *) { background-color: var(--bg-elevated); }
+html.light .bg-\[\#2A2A2A\]:not([data-theme-fixed] *) { background-color: #E0DED6; }
+html.light .hover\:bg-\[\#1A1A1A\]:hover:not([data-theme-fixed] *) { background-color: var(--bg-elevated); }
+html.light .hover\:bg-\[\#2A2A2A\]:hover:not([data-theme-fixed] *) { background-color: #E0DED6; }
+
+/* Bordures */
+html.light .border-\[\#2A2A2A\]:not([data-theme-fixed] *) { border-color: var(--border-color); }
+html.light .border-\[\#71717A\]:not([data-theme-fixed] *) { border-color: #A1A1AA; }
+html.light .border-\[\#A1A1AA\]:not([data-theme-fixed] *) { border-color: #D4D4D8; }
+html.light .hover\:border-\[\#71717A\]:hover:not([data-theme-fixed] *) { border-color: #A1A1AA; }
+
+/* Textes */
+html.light .text-white:not([data-theme-fixed] *) { color: var(--text-primary); }
+html.light .hover\:text-white:hover:not([data-theme-fixed] *) { color: var(--text-primary); }
+html.light .text-\[\#A1A1AA\]:not([data-theme-fixed] *) { color: var(--text-secondary); }
+html.light .text-\[\#71717A\]:not([data-theme-fixed] *) { color: var(--text-muted); }
+html.light .text-\[\#2A2A2A\]:not([data-theme-fixed] *) { color: #D6D3CB; }
+
+/* Or : les textes dores passent sur un or plus fonce, lisible sur fond clair.
+   Les fonds dores (boutons) gardent l'or vif, avec leur texte sombre. */
+html.light .text-\[\#D4AF37\]:not([data-theme-fixed] *) { color: var(--accent-gold); }
+html.light .text-\[\#B3922E\]:not([data-theme-fixed] *) { color: var(--accent-gold-hover); }
+html.light .hover\:text-\[\#D4AF37\]:hover:not([data-theme-fixed] *) { color: var(--accent-gold); }
+html.light .hover\:text-\[\#B3922E\]:hover:not([data-theme-fixed] *) { color: var(--accent-gold-hover); }
+html.light .bg-\[\#D4AF37\]:not([data-theme-fixed] *) { background-color: #D4AF37; }
+html.light .bg-\[\#D4AF37\] .text-\[\#0A0A0A\],
+html.light .text-\[\#0A0A0A\] { color: #0A0A0A; }
+
+/* Le bouton or global : texte sombre sur or vif en mode clair */
+html.light .btn-gold { background: #D4AF37; color: #0A0A0A; }
+html.light .btn-gold:hover { background: #C4A030; }
+
+/* Composants custom */
+html.light .glass {
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+html.light .input-dark {
+  background: var(--bg-surface);
+  border-color: rgba(0, 0, 0, 0.15);
+}
+html.light .table-dark tr:hover td { background: rgba(0, 0, 0, 0.02); }
+html.light ::-webkit-scrollbar-thumb:hover { background: #C9C6BC; }
+html.light .App::before { opacity: 0.015; }
+
+@media (max-width: 768px) {
+  html.light .mobile-nav {
+    background: rgba(246, 245, 241, 0.95);
+    border-top: 1px solid var(--border-color);
+  }
+}

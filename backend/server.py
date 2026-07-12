@@ -1292,6 +1292,78 @@ async def reply_to_review(review_id: str, payload: ReviewReply, user: dict = Dep
     return {"message": "Reply saved"}
 
 # ========================
+# PRODUCT IMAGE SCRAPING (admin)
+# ========================
+
+class ScrapeImageRequest(BaseModel):
+    url: str
+
+_PRIVATE_HOST_RE = re.compile(
+    r"^(localhost|127\.|0\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|\[?::1)",
+    re.IGNORECASE
+)
+
+@api_router.post("/admin/scrape-product-image")
+async def scrape_product_image(payload: ScrapeImageRequest, admin: dict = Depends(get_current_user)):
+    """Recupere l'image principale d'une page produit (Alibaba/1688/...) via ses
+    meta tags og:image / twitter:image. Reserve a l'admin ; garde anti-SSRF basique."""
+    if admin.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    url = payload.url.strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="URL invalide (http/https uniquement)")
+
+    from urllib.parse import urlparse
+    hostname = (urlparse(url).hostname or "")
+    if not hostname or "." not in hostname or _PRIVATE_HOST_RE.match(hostname):
+        raise HTTPException(status_code=400, detail="Hote non autorise")
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "fr,en;q=0.8,zh;q=0.6",
+    }
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=15) as http_client:
+            response = await http_client.get(url, headers=headers)
+    except Exception as e:
+        logger.warning(f"Scrape failed for {url}: {e}")
+        raise HTTPException(status_code=502, detail="Impossible de charger la page produit")
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"La page produit repond avec une erreur ({response.status_code})")
+
+    html = response.text[:800_000]  # borne la taille analysee
+
+    # og:image / twitter:image, dans les deux ordres d'attributs
+    patterns = [
+        r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)(?::src)?["\'][^>]+content=["\']([^"\']+)["\']',
+        r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\'](?:og:image|twitter:image)(?::src)?["\']',
+        # fallback frequent sur les pages produit chinoises
+        r'"(?:imageUrl|mainImageUrl|imgUrl)"\s*:\s*"(https?:[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+    ]
+    image_url = None
+    for pattern in patterns:
+        match = re.search(pattern, html, re.IGNORECASE)
+        if match:
+            image_url = match.group(1)
+            break
+
+    if not image_url:
+        raise HTTPException(
+            status_code=404,
+            detail="Aucune image trouvee sur cette page. Collez l'URL de l'image manuellement."
+        )
+
+    # Normalisation : URLs protocole-relatives (//img.alicdn.com/...) et echappees
+    image_url = image_url.replace("\\u002F", "/").replace("\\/", "/")
+    if image_url.startswith("//"):
+        image_url = "https:" + image_url
+
+    return {"image_url": image_url}
+
+# ========================
 # SIMULATION ROUTE (Public)
 # ========================
 
@@ -1832,6 +1904,82 @@ async def get_admin_stats(user: dict = Depends(require_admin)):
         "active_groupages": active_groupages,
         "pending_proposals": pending_proposals,
         "total_revenue": total_revenue[0]["total"] if total_revenue else 0
+    }
+
+@api_router.get("/admin/users")
+async def admin_list_users(
+    search: Optional[str] = None,
+    role: Optional[str] = None,
+    kyc_status: Optional[str] = None,
+    limit: int = 50,
+    skip: int = 0,
+    admin: dict = Depends(require_admin)
+):
+    """Liste paginee de tous les utilisateurs, avec recherche (nom, email,
+    telephone, ville) et filtres par role / statut KYC."""
+    query = {}
+    if search:
+        regex = {"$regex": re.escape(search.strip()), "$options": "i"}
+        query["$or"] = [{"name": regex}, {"email": regex}, {"phone": regex}, {"location": regex}]
+    if role:
+        query["role"] = role
+    if kyc_status:
+        query["kyc_status"] = kyc_status
+
+    limit = max(1, min(limit, 100))
+    total = await db.users.count_documents(query)
+    users = await db.users.find(query, {"_id": 0, "password_hash": 0}) \
+        .sort("created_at", -1).skip(max(0, skip)).limit(limit).to_list(limit)
+    return {"total": total, "users": users}
+
+@api_router.get("/admin/users/{user_id}/details")
+async def admin_user_details(user_id: str, admin: dict = Depends(require_admin)):
+    """Vue 360 d'un utilisateur : profil complet, adhesions aux groupages avec
+    paiements, propositions de produits, avis laisses, activite chat."""
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Adhesions + infos du groupage correspondant
+    memberships = await db.groupage_members.find({"user_id": user_id}, {"_id": 0}).sort("joined_at", -1).to_list(200)
+    groupage_ids = [m["groupage_id"] for m in memberships]
+    groupages = await db.groupages.find(
+        {"groupage_id": {"$in": groupage_ids}},
+        {"_id": 0, "groupage_id": 1, "title": 1, "status": 1, "shipment_status": 1, "deadline": 1}
+    ).to_list(200)
+    groupage_map = {g["groupage_id"]: g for g in groupages}
+    for m in memberships:
+        m["groupage"] = groupage_map.get(m["groupage_id"])
+
+    # Paiements
+    payments = await db.payment_transactions.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(200)
+
+    # Propositions creees ou soutenues
+    proposals = await db.product_proposals.find(
+        {"$or": [{"user_id": user_id}, {"interested_user_ids": user_id}]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+    for p in proposals:
+        p["is_creator"] = p.get("user_id") == user_id
+
+    # Avis laisses
+    reviews = await db.groupage_reviews.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    for r in reviews:
+        g = groupage_map.get(r["groupage_id"])
+        if not g:
+            g = await db.groupages.find_one({"groupage_id": r["groupage_id"]}, {"_id": 0, "title": 1})
+        r["groupage_title"] = (g or {}).get("title")
+
+    # Activite chat (volume seulement)
+    message_count = await db.messages.count_documents({"user_id": user_id})
+
+    return {
+        "user": user,
+        "memberships": memberships,
+        "payments": payments,
+        "proposals": proposals,
+        "reviews": reviews,
+        "message_count": message_count
     }
 
 @api_router.get("/admin/kyc/queue")

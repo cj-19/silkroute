@@ -4,6 +4,14 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#000000" />
+        <script>
+            /* Applique le theme choisi avant le rendu React pour eviter un flash */
+            try {
+                if (localStorage.getItem('silkroute_theme') === 'light') {
+                    document.documentElement.classList.add('light');
+                }
+            } catch (e) {}
+        </script>
         <meta name="description" content="SilkRoute - Importez depuis la Chine. Ensemble." />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

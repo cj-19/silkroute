@@ -5,7 +5,8 @@ import { Layout } from '@/components/Layout';
 import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
-  Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin
+  Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin,
+  Image as ImageIcon
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -20,6 +21,7 @@ const AdminPage = () => {
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
     { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
     { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield },
+    { path: '/admin/users', label: i18n.language === 'fr' ? 'Utilisateurs' : 'Users', icon: Users },
     { path: '/admin/transitaires', label: i18n.language === 'fr' ? 'Transitaires' : 'Forwarders', icon: Truck },
     { path: '/admin/suppliers', label: i18n.language === 'fr' ? 'Fournisseurs' : 'Suppliers', icon: Factory },
     { path: '/admin/accounts', label: i18n.language === 'fr' ? 'Comptes partenaires' : 'Partner accounts', icon: KeyRound }
@@ -59,6 +61,7 @@ const AdminPage = () => {
               <Route path="groupages" element={<AdminGroupages />} />
               <Route path="proposals" element={<AdminProposals />} />
               <Route path="kyc" element={<AdminKYC />} />
+              <Route path="users" element={<AdminUsers />} />
               <Route path="transitaires" element={<AdminTransitaires />} />
               <Route path="suppliers" element={<AdminSuppliers />} />
               <Route path="accounts" element={<AdminPartnerAccounts />} />
@@ -221,6 +224,7 @@ const AdminGroupages = () => {
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [pickupSummary, setPickupSummary] = useState(null); // {title, by_city}
+  const [editingImage, setEditingImage] = useState(null); // groupage dont on modifie l'image
   const fr = i18n.language === 'fr';
 
   const toggleTransitaireStatus = async (groupage) => {
@@ -328,6 +332,14 @@ const AdminGroupages = () => {
                 <td>
                   <div className="flex items-center gap-2">
                     <button
+                      onClick={() => setEditingImage(groupage)}
+                      className="text-[#A1A1AA] hover:text-[#D4AF37]"
+                      title={fr ? "Modifier l'image produit" : 'Edit product image'}
+                      data-testid={`edit-image-${groupage.groupage_id}`}
+                    >
+                      <ImageIcon className="w-5 h-5" />
+                    </button>
+                    <button
                       onClick={() => showPickupSummary(groupage)}
                       className="text-[#A1A1AA] hover:text-[#D4AF37]"
                       title={fr ? 'Répartition par ville de retrait' : 'Split by pickup city'}
@@ -354,6 +366,19 @@ const AdminGroupages = () => {
           onClose={() => setShowCreateModal(false)}
           onCreated={() => {
             setShowCreateModal(false);
+            fetchGroupages();
+          }}
+        />
+      )}
+
+      {/* Edition de l'image produit d'un groupage existant */}
+      {editingImage && (
+        <EditImageModal
+          groupage={editingImage}
+          fr={fr}
+          onClose={() => setEditingImage(null)}
+          onSaved={() => {
+            setEditingImage(null);
             fetchGroupages();
           }}
         />
@@ -457,6 +482,23 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
   const kgOptions = (selectedTransitaire?.shipping_options || []).filter(o => o.unit === 'kg' && o.is_active !== false);
   const legacyTransitaire = selectedTransitaire && !(selectedTransitaire.shipping_options || []).length
     && selectedTransitaire.shipping_price_per_kg_cny != null;
+
+  const [scraping, setScraping] = useState(false);
+
+  // Recupere l'image principale de la page produit (og:image) via le backend
+  const handleScrapeImage = async () => {
+    if (!formData.product_url) return;
+    setScraping(true);
+    try {
+      const response = await api.post('/admin/scrape-product-image', { url: formData.product_url });
+      setFormData(prev => ({ ...prev, product_image_url: response.data.image_url }));
+      toast.success(i18n.language === 'fr' ? 'Image récupérée!' : 'Image fetched!');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (i18n.language === 'fr' ? "Impossible de récupérer l'image" : 'Could not fetch image'));
+    } finally {
+      setScraping(false);
+    }
+  };
 
   // Selection d'une fiche fournisseur : pre-remplit les champs fournisseur du groupage
   const handleSupplierSelect = (supplierId) => {
@@ -717,12 +759,34 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             <label className="block text-sm text-[#A1A1AA] mb-2">
               {i18n.language === 'fr' ? "Image produit (URL, optionnel)" : 'Product image (URL, optional)'}
             </label>
-            <input
-              type="url"
-              value={formData.product_image_url}
-              onChange={(e) => setFormData({...formData, product_image_url: e.target.value})}
-              className="input-dark w-full px-4 py-2 rounded-md"
-            />
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={formData.product_image_url}
+                onChange={(e) => setFormData({...formData, product_image_url: e.target.value})}
+                className="input-dark flex-1 px-4 py-2 rounded-md"
+              />
+              <button
+                type="button"
+                onClick={handleScrapeImage}
+                disabled={scraping || !formData.product_url}
+                className="btn-outline px-3 py-2 rounded-md text-sm whitespace-nowrap flex items-center gap-1 disabled:opacity-50"
+                title={i18n.language === 'fr' ? 'Récupérer automatiquement l\'image depuis le lien produit' : 'Auto-fetch the image from the product link'}
+                data-testid="scrape-image-btn"
+              >
+                {scraping ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                {i18n.language === 'fr' ? 'Depuis le lien' : 'From link'}
+              </button>
+            </div>
+            {formData.product_image_url && (
+              <img
+                src={formData.product_image_url}
+                alt="aperçu produit"
+                className="mt-2 h-24 rounded-md object-cover border border-[#2A2A2A]"
+                onError={(e) => { e.target.style.display = 'none'; }}
+                onLoad={(e) => { e.target.style.display = ''; }}
+              />
+            )}
           </div>
 
           <div className="grid md:grid-cols-2 gap-4">
@@ -2032,5 +2096,501 @@ const AdminPartnerAccounts = () => {
     </div>
   );
 };
+
+// Modal d'edition de l'image produit d'un groupage
+const EditImageModal = ({ groupage, fr, onClose, onSaved }) => {
+  const [imageUrl, setImageUrl] = useState(groupage.product_image_url || '');
+  const [scraping, setScraping] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const handleScrape = async () => {
+    setScraping(true);
+    try {
+      const response = await api.post('/admin/scrape-product-image', { url: groupage.product_url });
+      setImageUrl(response.data.image_url);
+      toast.success(fr ? 'Image récupérée!' : 'Image fetched!');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? "Impossible de récupérer l'image" : 'Could not fetch image'));
+    } finally {
+      setScraping(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.put(`/admin/groupages/${groupage.groupage_id}`, { product_image_url: imageUrl || null });
+      toast.success(fr ? 'Image mise à jour!' : 'Image updated!');
+      onSaved();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-md p-6"
+        onClick={(e) => e.stopPropagation()} data-testid="edit-image-modal">
+        <div className="flex justify-between items-center mb-1">
+          <h3 className="font-['Bebas_Neue'] text-xl">{fr ? 'Image du produit' : 'Product image'}</h3>
+          <button onClick={onClose} className="text-[#71717A] hover:text-white"><X className="w-5 h-5" /></button>
+        </div>
+        <p className="text-sm text-[#71717A] mb-4 truncate">{groupage.title}</p>
+
+        {imageUrl ? (
+          <img
+            src={imageUrl}
+            alt="aperçu produit"
+            className="w-full h-40 object-cover rounded-md border border-[#2A2A2A] mb-4"
+            onError={(e) => { e.target.style.opacity = 0.3; }}
+            onLoad={(e) => { e.target.style.opacity = 1; }}
+          />
+        ) : (
+          <div className="w-full h-40 rounded-md border border-dashed border-[#2A2A2A] mb-4 flex items-center justify-center text-[#71717A] text-sm">
+            {fr ? 'Aucune image' : 'No image'}
+          </div>
+        )}
+
+        <input
+          type="url"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          placeholder={fr ? "URL de l'image..." : 'Image URL...'}
+          className="input-dark w-full px-4 py-2 rounded-md mb-3"
+          data-testid="image-url-input"
+        />
+
+        <div className="flex gap-3">
+          <button
+            onClick={handleScrape}
+            disabled={scraping || !groupage.product_url}
+            className="btn-outline px-4 py-2 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {scraping ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+            {fr ? 'Depuis le lien produit' : 'From product link'}
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="btn-gold px-4 py-2 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+            data-testid="save-image-btn"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ============ Admin Users (vue 360 des utilisateurs) ============
+
+const AdminUsers = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [users, setUsers] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [kycFilter, setKycFilter] = useState('');
+  const [page, setPage] = useState(0);
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const PAGE_SIZE = 25;
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ limit: PAGE_SIZE, skip: page * PAGE_SIZE });
+      if (search.trim()) params.set('search', search.trim());
+      if (roleFilter) params.set('role', roleFilter);
+      if (kycFilter) params.set('kyc_status', kycFilter);
+      const response = await api.get(`/admin/users?${params}`);
+      setUsers(response.data.users);
+      setTotal(response.data.total);
+    } catch (error) {
+      console.error('Error fetching users:', error);
+      toast.error(fr ? 'Erreur de chargement' : 'Loading error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, roleFilter, kycFilter]);
+
+  const handleSearch = (e) => {
+    e.preventDefault();
+    setPage(0);
+    fetchUsers();
+  };
+
+  const roleBadge = (role) => {
+    const styles = {
+      admin: 'bg-[#D4AF37]/20 text-[#D4AF37]',
+      member: 'bg-[#2A2A2A] text-[#A1A1AA]',
+      transitaire: 'bg-[#22C55E]/20 text-[#22C55E]',
+      supplier: 'bg-[#F97316]/20 text-[#F97316]'
+    };
+    const labels = fr
+      ? { admin: 'Admin', member: 'Membre', transitaire: 'Transitaire', supplier: 'Fournisseur' }
+      : { admin: 'Admin', member: 'Member', transitaire: 'Forwarder', supplier: 'Supplier' };
+    return <span className={`px-2 py-0.5 rounded text-xs ${styles[role] || styles.member}`}>{labels[role] || role}</span>;
+  };
+
+  const kycBadge = (status) => {
+    const map = { pending: 'badge-warning', submitted: 'badge-gold', validated: 'badge-success', rejected: 'badge-danger' };
+    return <span className={`${map[status] || 'badge-warning'} px-2 py-0.5 rounded text-xs`}>{status}</span>;
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  return (
+    <div data-testid="admin-users">
+      <div className="flex justify-between items-center mb-6">
+        <h1 className="font-['Bebas_Neue'] text-3xl">
+          {fr ? 'Utilisateurs' : 'Users'} <span className="text-[#71717A] text-xl">({total})</span>
+        </h1>
+      </div>
+
+      {/* Recherche + filtres */}
+      <form onSubmit={handleSearch} className="flex flex-wrap gap-3 mb-6">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={fr ? 'Rechercher (nom, email, téléphone, ville)...' : 'Search (name, email, phone, city)...'}
+          className="input-dark px-4 py-2 rounded-md flex-1 min-w-[220px]"
+          data-testid="users-search-input"
+        />
+        <select value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(0); }}
+          className="input-dark px-3 py-2 rounded-md">
+          <option value="">{fr ? 'Tous les rôles' : 'All roles'}</option>
+          <option value="member">{fr ? 'Membres' : 'Members'}</option>
+          <option value="admin">Admins</option>
+          <option value="transitaire">{fr ? 'Transitaires' : 'Forwarders'}</option>
+          <option value="supplier">{fr ? 'Fournisseurs' : 'Suppliers'}</option>
+        </select>
+        <select value={kycFilter} onChange={(e) => { setKycFilter(e.target.value); setPage(0); }}
+          className="input-dark px-3 py-2 rounded-md">
+          <option value="">{fr ? 'Tout KYC' : 'All KYC'}</option>
+          <option value="pending">pending</option>
+          <option value="submitted">submitted</option>
+          <option value="validated">validated</option>
+          <option value="rejected">rejected</option>
+        </select>
+        <button type="submit" className="btn-gold px-4 py-2 rounded-md">
+          {fr ? 'Rechercher' : 'Search'}
+        </button>
+      </form>
+
+      {loading ? (
+        <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>
+      ) : (
+        <>
+          <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg overflow-x-auto">
+            <table className="table-dark">
+              <thead>
+                <tr>
+                  <th>{fr ? 'Nom' : 'Name'}</th>
+                  <th>Email</th>
+                  <th>{fr ? 'Rôle' : 'Role'}</th>
+                  <th>KYC</th>
+                  <th>{fr ? 'Ville' : 'City'}</th>
+                  <th>{fr ? 'Inscrit le' : 'Joined'}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => (
+                  <tr key={u.user_id} className="cursor-pointer" onClick={() => setSelectedUserId(u.user_id)}>
+                    <td className="font-medium">{u.name}</td>
+                    <td className="text-[#A1A1AA]">
+                      {u.email}
+                      {u.email_verified === false && (
+                        <span className="ml-2 badge-warning px-1.5 py-0.5 rounded text-[10px]">{fr ? 'non vérifié' : 'unverified'}</span>
+                      )}
+                    </td>
+                    <td>{roleBadge(u.role)}</td>
+                    <td>{kycBadge(u.kyc_status)}</td>
+                    <td className="text-[#A1A1AA]">{u.location || '—'}</td>
+                    <td className="text-[#71717A] text-sm">
+                      {u.created_at ? new Date(u.created_at).toLocaleDateString(fr ? 'fr-FR' : 'en-US') : '—'}
+                    </td>
+                    <td><Eye className="w-4 h-4 text-[#D4AF37]" /></td>
+                  </tr>
+                ))}
+                {users.length === 0 && (
+                  <tr><td colSpan={7} className="text-center text-[#71717A] py-8">
+                    {fr ? 'Aucun utilisateur trouvé' : 'No user found'}
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-center gap-4 mt-4">
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                className="btn-outline px-3 py-1.5 rounded-md text-sm disabled:opacity-40">
+                ← {fr ? 'Précédent' : 'Previous'}
+              </button>
+              <span className="text-sm text-[#71717A]">{page + 1} / {totalPages}</span>
+              <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                className="btn-outline px-3 py-1.5 rounded-md text-sm disabled:opacity-40">
+                {fr ? 'Suivant' : 'Next'} →
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {selectedUserId && (
+        <UserDetailModal
+          userId={selectedUserId}
+          fr={fr}
+          onClose={() => setSelectedUserId(null)}
+          onChanged={fetchUsers}
+        />
+      )}
+    </div>
+  );
+};
+
+const UserDetailModal = ({ userId, fr, onClose, onChanged }) => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [kycSaving, setKycSaving] = useState(false);
+
+  const fetchDetails = async () => {
+    try {
+      const response = await api.get(`/admin/users/${userId}/details`);
+      setData(response.data);
+    } catch (error) {
+      toast.error(fr ? 'Erreur de chargement' : 'Loading error');
+      onClose();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchDetails();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  const updateKyc = async (status) => {
+    setKycSaving(true);
+    try {
+      await api.put(`/admin/kyc/${userId}`, { status });
+      toast.success(`KYC ${status}`);
+      fetchDetails();
+      onChanged();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setKycSaving(false);
+    }
+  };
+
+  const fmtDate = (d) => d ? new Date(d).toLocaleString(fr ? 'fr-FR' : 'en-US') : '—';
+  const fcfa = (n) => `${new Intl.NumberFormat('fr-FR').format(Math.round(n || 0))} FCFA`;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()} data-testid="user-detail-modal">
+        {loading || !data ? (
+          <div className="p-16 text-center"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>
+        ) : (
+          <>
+            <div className="p-6 border-b border-[#2A2A2A] flex justify-between items-start">
+              <div>
+                <h2 className="font-['Bebas_Neue'] text-2xl">{data.user.name}</h2>
+                <p className="text-sm text-[#A1A1AA]">{data.user.email}</p>
+              </div>
+              <button onClick={onClose} className="text-[#71717A] hover:text-white"><X className="w-6 h-6" /></button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {/* Infos profil */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  {fr ? 'Profil' : 'Profile'}
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                  <Info label={fr ? 'Rôle' : 'Role'} value={data.user.role} />
+                  <Info label={fr ? 'Téléphone' : 'Phone'} value={data.user.phone} />
+                  <Info label={fr ? 'Ville' : 'City'} value={data.user.location} />
+                  <Info label={fr ? 'Langue' : 'Language'} value={data.user.language} />
+                  <Info label="Mobile Money" value={data.user.mobile_money?.number
+                    ? `${data.user.mobile_money.provider || ''} ${data.user.mobile_money.number}` : null} />
+                  <Info label={fr ? 'Profil acheteur' : 'Buyer profile'} value={data.user.buyer_profile} />
+                  <Info label={fr ? 'Email vérifié' : 'Email verified'}
+                    value={data.user.email_verified === true ? '✓' : data.user.email_verified === false ? '✗' : '—'} />
+                  <Info label="CGU" value={data.user.cgu_accepted ? '✓' : '✗'} />
+                  <Info label={fr ? 'Inscrit le' : 'Joined'} value={fmtDate(data.user.created_at)} />
+                  <Info label={fr ? 'Messages chat' : 'Chat messages'} value={String(data.message_count)} />
+                </div>
+              </section>
+
+              {/* KYC */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  KYC — <span className="normal-case">{data.user.kyc_status}</span>
+                </h3>
+                <div className="flex flex-wrap items-center gap-3">
+                  {['id_front', 'id_back', 'selfie'].map(key => (
+                    data.user.kyc_documents?.[key] ? (
+                      <a key={key} href={data.user.kyc_documents[key]} target="_blank" rel="noopener noreferrer"
+                        className="btn-outline px-3 py-1.5 rounded-md text-sm">
+                        📄 {key.replace('_', ' ')}
+                      </a>
+                    ) : (
+                      <span key={key} className="text-xs text-[#71717A] border border-dashed border-[#2A2A2A] px-3 py-1.5 rounded-md">
+                        {key.replace('_', ' ')} : {fr ? 'absent' : 'missing'}
+                      </span>
+                    )
+                  ))}
+                  <div className="flex gap-2 ml-auto">
+                    {data.user.kyc_status !== 'validated' && (
+                      <button onClick={() => updateKyc('validated')} disabled={kycSaving}
+                        className="bg-[#22C55E] text-white px-3 py-1.5 rounded-md text-sm disabled:opacity-50">
+                        {fr ? 'Valider' : 'Validate'}
+                      </button>
+                    )}
+                    {data.user.kyc_status !== 'rejected' && (
+                      <button onClick={() => updateKyc('rejected')} disabled={kycSaving}
+                        className="bg-[#EF4444] text-white px-3 py-1.5 rounded-md text-sm disabled:opacity-50">
+                        {fr ? 'Rejeter' : 'Reject'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* Groupages */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  {fr ? 'Groupages rejoints' : 'Joined groupages'} ({data.memberships.length})
+                </h3>
+                {data.memberships.length === 0 ? (
+                  <p className="text-sm text-[#71717A]">{fr ? 'Aucun' : 'None'}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.memberships.map(m => (
+                      <div key={m.member_id} className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-md p-3 text-sm">
+                        <div className="flex justify-between gap-2 flex-wrap">
+                          <Link to={`/groupages/${m.groupage_id}`} className="font-medium text-[#D4AF37] hover:underline">
+                            {m.groupage?.title || m.groupage_id}
+                          </Link>
+                          <span className="text-[#71717A]">{fmtDate(m.joined_at)}</span>
+                        </div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-[#A1A1AA]">
+                          <span>{m.quantity} {fr ? 'unités' : 'units'} ({m.share_percentage}%)</span>
+                          <span>{fcfa(m.total_price_fcfa)}</span>
+                          {m.pickup_city && <span>📍 {m.pickup_city}</span>}
+                          <span className={m.caution_paid ? 'text-[#22C55E]' : 'text-[#F97316]'}>
+                            {fr ? 'Caution' : 'Deposit'}: {m.caution_paid ? '✓' : '✗'}
+                          </span>
+                          <span className={m.solde_paid ? 'text-[#22C55E]' : 'text-[#F97316]'}>
+                            {fr ? 'Solde' : 'Balance'}: {m.solde_paid ? '✓' : '✗'}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* Propositions */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  {fr ? 'Propositions de produits' : 'Product proposals'} ({data.proposals.length})
+                </h3>
+                {data.proposals.length === 0 ? (
+                  <p className="text-sm text-[#71717A]">{fr ? 'Aucune' : 'None'}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.proposals.map(p => (
+                      <div key={p.proposal_id} className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-md p-3 text-sm flex justify-between gap-2 flex-wrap">
+                        <div>
+                          <span className="font-medium">{p.title}</span>
+                          <span className="text-[#71717A] ml-2">
+                            {p.is_creator ? (fr ? '(créateur)' : '(creator)') : (fr ? '(intéressé)' : '(interested)')}
+                          </span>
+                        </div>
+                        <div className="flex gap-3 text-[#A1A1AA]">
+                          <span>{p.interested_count || 1} {fr ? 'intéressé(s)' : 'interested'}</span>
+                          <span className={`badge-${p.status === 'approved' || p.status === 'featured' ? 'success' : p.status === 'rejected' ? 'danger' : 'warning'} px-2 py-0.5 rounded text-xs`}>
+                            {p.status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* Avis */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  {fr ? 'Avis laissés' : 'Reviews'} ({data.reviews.length})
+                </h3>
+                {data.reviews.length === 0 ? (
+                  <p className="text-sm text-[#71717A]">{fr ? 'Aucun' : 'None'}</p>
+                ) : (
+                  <div className="space-y-2">
+                    {data.reviews.map(r => (
+                      <div key={r.review_id} className="bg-[#0A0A0A] border border-[#2A2A2A] rounded-md p-3 text-sm">
+                        <div className="flex justify-between gap-2">
+                          <span className="font-medium">{r.groupage_title || r.groupage_id}</span>
+                          <span className="text-[#D4AF37]">{'★'.repeat(r.rating)}{'☆'.repeat(5 - r.rating)}</span>
+                        </div>
+                        {r.comment && <p className="text-[#A1A1AA] mt-1">{r.comment}</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {/* Paiements */}
+              <section>
+                <h3 className="text-sm font-medium text-[#D4AF37] uppercase tracking-wide mb-3">
+                  {fr ? 'Paiements' : 'Payments'} ({data.payments.length})
+                </h3>
+                {data.payments.length === 0 ? (
+                  <p className="text-sm text-[#71717A]">{fr ? 'Aucun' : 'None'}</p>
+                ) : (
+                  <div className="space-y-1">
+                    {data.payments.map(p => (
+                      <div key={p.payment_id} className="flex justify-between gap-2 text-sm bg-[#0A0A0A] border border-[#2A2A2A] rounded-md px-3 py-2">
+                        <span>{p.payment_type} · {p.amount} {p.currency?.toUpperCase()}</span>
+                        <span className={p.status === 'completed' ? 'text-[#22C55E]' : 'text-[#F97316]'}>{p.status}</span>
+                        <span className="text-[#71717A]">{fmtDate(p.created_at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const Info = ({ label, value }) => (
+  <div>
+    <p className="text-xs text-[#71717A]">{label}</p>
+    <p className="text-[#A1A1AA]">{value || '—'}</p>
+  </div>
+);
 
 export default AdminPage;

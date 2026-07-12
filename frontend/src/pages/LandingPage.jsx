@@ -47,9 +47,10 @@ const LandingPage = () => {
   return (
     <Layout>
       {/* Hero Section */}
-      <section 
+      <section
         className="relative min-h-[90vh] flex items-center justify-center overflow-hidden"
         data-testid="hero-section"
+        data-theme-fixed
       >
         {/* Background Image with Overlay */}
         <div 
