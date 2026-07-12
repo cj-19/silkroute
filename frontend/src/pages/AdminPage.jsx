@@ -226,6 +226,7 @@ const AdminGroupages = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [pickupSummary, setPickupSummary] = useState(null); // {title, by_city}
   const [editingImage, setEditingImage] = useState(null); // groupage dont on modifie l'image
+  const [editingGroupage, setEditingGroupage] = useState(null); // groupage en edition complete
   const fr = i18n.language === 'fr';
 
   const toggleTransitaireStatus = async (groupage) => {
@@ -333,6 +334,14 @@ const AdminGroupages = () => {
                 <td>
                   <div className="flex items-center gap-2">
                     <button
+                      onClick={() => setEditingGroupage(groupage)}
+                      className="text-[#A1A1AA] hover:text-[#D4AF37]"
+                      title={fr ? 'Modifier le groupage' : 'Edit groupage'}
+                      data-testid={`edit-groupage-${groupage.groupage_id}`}
+                    >
+                      <Pencil className="w-5 h-5" />
+                    </button>
+                    <button
                       onClick={() => setEditingImage(groupage)}
                       className="text-[#A1A1AA] hover:text-[#D4AF37]"
                       title={fr ? "Modifier l'image produit" : 'Edit product image'}
@@ -367,6 +376,19 @@ const AdminGroupages = () => {
           onClose={() => setShowCreateModal(false)}
           onCreated={() => {
             setShowCreateModal(false);
+            fetchGroupages();
+          }}
+        />
+      )}
+
+      {/* Edition complete d'un groupage existant */}
+      {editingGroupage && (
+        <EditGroupageModal
+          groupage={editingGroupage}
+          fr={fr}
+          onClose={() => setEditingGroupage(null)}
+          onSaved={() => {
+            setEditingGroupage(null);
             fetchGroupages();
           }}
         />
@@ -449,6 +471,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     shipping_option_id: '',
     unit_price_cny: 100,
     unit_weight_kg: 0.5,
+    unit_volume_cbm: '',
     total_quantity: 100,
     total_order_price_cny: 10000,
     min_members: 5,
@@ -477,14 +500,40 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     loadOptions();
   }, []);
 
-  // Options de transport au kg du transitaire selectionne (le comparateur de prix
-  // des groupages ne supporte pas encore la facturation au CBM).
+  // Options de transport actives du transitaire selectionne (au kg ou au CBM)
   const selectedTransitaire = transitaires.find(tr => tr.transitaire_id === formData.transitaire_id);
-  const kgOptions = (selectedTransitaire?.shipping_options || []).filter(o => o.unit === 'kg' && o.is_active !== false);
+  const activeOptions = (selectedTransitaire?.shipping_options || []).filter(o => o.is_active !== false);
   const legacyTransitaire = selectedTransitaire && !(selectedTransitaire.shipping_options || []).length
     && selectedTransitaire.shipping_price_per_kg_cny != null;
+  const selectedOption = activeOptions.find(o => o.option_id === formData.shipping_option_id);
+  const isCbm = selectedOption?.unit === 'cbm';
 
   const [scraping, setScraping] = useState(false);
+  const [estimating, setEstimating] = useState(false);
+  const [estimate, setEstimate] = useState(null);
+
+  // Calcule le prix total de la commande selon la formule du transitaire :
+  // marchandise + (poids ou volume unitaire x quantite cible x tarif de l'option)
+  const handleEstimate = async () => {
+    setEstimating(true);
+    try {
+      const response = await api.post('/admin/groupages/estimate', {
+        transitaire_id: formData.transitaire_id,
+        shipping_option_id: formData.shipping_option_id || null,
+        unit_price_cny: parseFloat(formData.unit_price_cny),
+        unit_weight_kg: parseFloat(formData.unit_weight_kg) || null,
+        unit_volume_cbm: parseFloat(formData.unit_volume_cbm) || null,
+        total_quantity: parseInt(formData.total_quantity)
+      });
+      setEstimate(response.data);
+      setFormData(prev => ({ ...prev, total_order_price_cny: response.data.total_order_price_cny }));
+      toast.success(i18n.language === 'fr' ? 'Prix total calculé!' : 'Total price computed!');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (i18n.language === 'fr' ? 'Erreur de calcul' : 'Estimation error'));
+    } finally {
+      setEstimating(false);
+    }
+  };
 
   // Recupere l'image principale de la page produit (og:image) via le backend
   const handleScrapeImage = async () => {
@@ -528,16 +577,22 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         : 'Select a category and a transitaire');
       return;
     }
-    if (kgOptions.length > 0 && !formData.shipping_option_id) {
+    if (activeOptions.length > 0 && !formData.shipping_option_id) {
       toast.error(i18n.language === 'fr'
         ? 'Sélectionnez une option de transport'
         : 'Select a shipping option');
       return;
     }
-    if (selectedTransitaire && kgOptions.length === 0 && !legacyTransitaire) {
+    if (selectedTransitaire && activeOptions.length === 0 && !legacyTransitaire) {
       toast.error(i18n.language === 'fr'
-        ? "Ce transitaire n'a aucune option de transport au kg — ajoutez-en une dans l'onglet Transitaires."
-        : 'This forwarder has no per-kg shipping option — add one in the Forwarders tab.');
+        ? "Ce transitaire n'a aucune option de transport — ajoutez-en une dans l'onglet Transitaires."
+        : 'This forwarder has no shipping option — add one in the Forwarders tab.');
+      return;
+    }
+    if (isCbm && !parseFloat(formData.unit_volume_cbm)) {
+      toast.error(i18n.language === 'fr'
+        ? 'Cette option est facturée au volume : renseignez le volume unitaire (CBM).'
+        : 'This option is billed by volume: enter the unit volume (CBM).');
       return;
     }
     if (!formData.business_license_url) {
@@ -573,6 +628,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         shipping_option_id: formData.shipping_option_id || null,
         unit_price_cny: parseFloat(formData.unit_price_cny),
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
+        unit_volume_cbm: parseFloat(formData.unit_volume_cbm) || null,
         total_quantity: parseInt(formData.total_quantity),
         total_order_price_cny: parseFloat(formData.total_order_price_cny),
         min_members: parseInt(formData.min_members),
@@ -693,32 +749,32 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
           </div>
 
           {/* Option de transport du transitaire selectionne */}
-          {formData.transitaire_id && kgOptions.length > 0 && (
+          {formData.transitaire_id && activeOptions.length > 0 && (
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
                 {i18n.language === 'fr' ? 'Option de transport' : 'Shipping option'}
               </label>
               <select
                 value={formData.shipping_option_id}
-                onChange={(e) => setFormData({...formData, shipping_option_id: e.target.value})}
+                onChange={(e) => { setFormData({...formData, shipping_option_id: e.target.value}); setEstimate(null); }}
                 className="input-dark w-full px-4 py-2 rounded-md"
                 required
                 data-testid="shipping-option-select"
               >
                 <option value="">{i18n.language === 'fr' ? '-- Choisir --' : '-- Select --'}</option>
-                {kgOptions.map(opt => (
+                {activeOptions.map(opt => (
                   <option key={opt.option_id} value={opt.option_id}>
-                    {opt.label} — {new Intl.NumberFormat('fr-FR').format(opt.price_fcfa)} FCFA/kg ({opt.eta_min_days}-{opt.eta_max_days}j)
+                    {opt.label} — {new Intl.NumberFormat('fr-FR').format(opt.price_fcfa)} FCFA/{opt.unit === 'cbm' ? 'CBM' : 'kg'} ({opt.eta_min_days}-{opt.eta_max_days}j)
                   </option>
                 ))}
               </select>
             </div>
           )}
-          {formData.transitaire_id && kgOptions.length === 0 && !legacyTransitaire && (
+          {formData.transitaire_id && activeOptions.length === 0 && !legacyTransitaire && (
             <p className="text-sm text-[#F97316]">
               {i18n.language === 'fr'
-                ? "⚠ Ce transitaire n'a pas d'option de transport au kg. Ajoutez-en une dans l'onglet Transitaires."
-                : '⚠ This forwarder has no per-kg shipping option. Add one in the Forwarders tab.'}
+                ? "⚠ Ce transitaire n'a pas d'option de transport. Ajoutez-en une dans l'onglet Transitaires."
+                : '⚠ This forwarder has no shipping option. Add one in the Forwarders tab.'}
             </p>
           )}
 
@@ -855,55 +911,101 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             />
           </div>
 
-          <div className="grid md:grid-cols-3 gap-4">
+          <div className={isCbm ? 'grid md:grid-cols-4 gap-4' : 'grid md:grid-cols-3 gap-4'}>
             <div>
-              <label className="block text-sm text-[#A1A1AA] mb-2">Unit Price (CNY)</label>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {i18n.language === 'fr' ? 'Prix unitaire (CNY)' : 'Unit price (CNY)'}
+              </label>
               <input
                 type="number"
                 value={formData.unit_price_cny}
-                onChange={(e) => setFormData({...formData, unit_price_cny: e.target.value})}
-                className="input-dark w-full px-4 py-2 rounded-md"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-sm text-[#A1A1AA] mb-2">Unit Weight (kg)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={formData.unit_weight_kg}
-                onChange={(e) => setFormData({...formData, unit_weight_kg: e.target.value})}
+                onChange={(e) => { setFormData({...formData, unit_price_cny: e.target.value}); setEstimate(null); }}
                 className="input-dark w-full px-4 py-2 rounded-md"
                 required
               />
             </div>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
-                {i18n.language === 'fr' ? 'Quantité totale commande' : 'Total order quantity'}
+                {i18n.language === 'fr' ? 'Poids unitaire (kg)' : 'Unit weight (kg)'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.unit_weight_kg}
+                onChange={(e) => { setFormData({...formData, unit_weight_kg: e.target.value}); setEstimate(null); }}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                required
+              />
+            </div>
+            {isCbm && (
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Volume unitaire (CBM)' : 'Unit volume (CBM)'}
+                </label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={formData.unit_volume_cbm}
+                  onChange={(e) => { setFormData({...formData, unit_volume_cbm: e.target.value}); setEstimate(null); }}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  required
+                  data-testid="unit-volume-input"
+                />
+              </div>
+            )}
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {i18n.language === 'fr' ? 'Quantité cible' : 'Target quantity'}
               </label>
               <input
                 type="number"
                 value={formData.total_quantity}
-                onChange={(e) => setFormData({...formData, total_quantity: e.target.value})}
+                onChange={(e) => { setFormData({...formData, total_quantity: e.target.value}); setEstimate(null); }}
                 className="input-dark w-full px-4 py-2 rounded-md"
                 required
               />
             </div>
           </div>
 
-          <div className="grid md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-sm text-[#A1A1AA] mb-2">
-                {i18n.language === 'fr' ? 'Prix total commande (CNY)' : 'Total order price (CNY)'}
-              </label>
+          {/* Prix total commande : calculable selon la formule du transitaire */}
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">
+              {i18n.language === 'fr' ? 'Prix total commande (CNY)' : 'Total order price (CNY)'}
+            </label>
+            <div className="flex gap-2">
               <input
                 type="number"
+                step="0.01"
                 value={formData.total_order_price_cny}
                 onChange={(e) => setFormData({...formData, total_order_price_cny: e.target.value})}
-                className="input-dark w-full px-4 py-2 rounded-md"
+                className="input-dark flex-1 px-4 py-2 rounded-md"
                 required
               />
+              <button
+                type="button"
+                onClick={handleEstimate}
+                disabled={estimating || !formData.transitaire_id || (activeOptions.length > 0 && !formData.shipping_option_id)}
+                className="btn-outline px-3 py-2 rounded-md text-sm whitespace-nowrap flex items-center gap-1 disabled:opacity-50"
+                title={i18n.language === 'fr'
+                  ? 'Marchandise + transport selon le tarif du transitaire (mesure unitaire × quantité cible)'
+                  : 'Goods + transport per forwarder tariff (unit measure × target quantity)'}
+                data-testid="estimate-btn"
+              >
+                {estimating ? <Loader2 className="w-4 h-4 animate-spin" /> : '🧮'}
+                {i18n.language === 'fr' ? 'Calculer selon transitaire' : 'Compute from forwarder'}
+              </button>
             </div>
+            {estimate && (
+              <p className="text-xs text-[#71717A] mt-2" data-testid="estimate-breakdown">
+                {i18n.language === 'fr' ? 'Marchandise' : 'Goods'}: {new Intl.NumberFormat('fr-FR').format(estimate.merchandise_fcfa)} FCFA
+                {' + '}{i18n.language === 'fr' ? 'Transport' : 'Shipping'} ({estimate.unit_measure} {estimate.transport_unit === 'cbm' ? 'CBM' : 'kg'} × {estimate.total_quantity}) : {new Intl.NumberFormat('fr-FR').format(estimate.transport_total_fcfa)} FCFA
+                {' = '}<span className="text-[#D4AF37]">{new Intl.NumberFormat('fr-FR').format(estimate.total_order_price_fcfa)} FCFA</span>
+                {' '}({estimate.total_order_price_cny} CNY)
+              </p>
+            )}
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">Min Members</label>
               <input
@@ -2091,6 +2193,300 @@ const AdminPartnerAccounts = () => {
           ))}
         </div>
       )}
+    </div>
+  );
+};
+
+// Convertit une date ISO en valeur pour input datetime-local
+const toLocalInput = (iso) => {
+  if (!iso) return '';
+  try {
+    const d = new Date(iso);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  } catch { return ''; }
+};
+
+// Modal d'edition complete d'un groupage : transitaire, option de transport,
+// chiffres (avec recalcul selon la formule du transitaire), dates, statut.
+const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
+  const [transitaires, setTransitaires] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [estimating, setEstimating] = useState(false);
+  const [estimate, setEstimate] = useState(null);
+
+  const [form, setForm] = useState({
+    title: groupage.title || '',
+    title_en: groupage.title_en || '',
+    status: groupage.status || 'open',
+    transitaire_id: groupage.transitaire_id || '',
+    shipping_option_id: groupage.shipping_option_id || '',
+    unit_price_cny: groupage.unit_price_cny ?? '',
+    unit_weight_kg: groupage.unit_weight_kg ?? '',
+    unit_volume_cbm: groupage.unit_volume_cbm ?? '',
+    total_quantity: groupage.total_quantity ?? '',
+    total_order_price_cny: groupage.total_order_price_cny ?? '',
+    min_members: groupage.min_members ?? '',
+    max_members: groupage.max_members ?? '',
+    deadline: toLocalInput(groupage.deadline),
+    estimated_arrival: toLocalInput(groupage.estimated_arrival),
+    local_price_fcfa: groupage.local_price_fcfa ?? '',
+    suggested_resale_price_fcfa: groupage.suggested_resale_price_fcfa ?? ''
+  });
+
+  useEffect(() => {
+    api.get('/transitaires?active_only=false')
+      .then(res => setTransitaires(res.data))
+      .catch(() => {});
+  }, []);
+
+  const selectedTransitaire = transitaires.find(t => t.transitaire_id === form.transitaire_id);
+  const activeOptions = (selectedTransitaire?.shipping_options || []).filter(o => o.is_active !== false);
+  const selectedOption = activeOptions.find(o => o.option_id === form.shipping_option_id);
+  const isCbm = selectedOption?.unit === 'cbm';
+  const set = (patch) => { setForm(prev => ({ ...prev, ...patch })); setEstimate(null); };
+
+  const handleEstimate = async () => {
+    setEstimating(true);
+    try {
+      const response = await api.post('/admin/groupages/estimate', {
+        transitaire_id: form.transitaire_id,
+        shipping_option_id: form.shipping_option_id || null,
+        unit_price_cny: parseFloat(form.unit_price_cny),
+        unit_weight_kg: parseFloat(form.unit_weight_kg) || null,
+        unit_volume_cbm: parseFloat(form.unit_volume_cbm) || null,
+        total_quantity: parseInt(form.total_quantity)
+      });
+      setEstimate(response.data);
+      setForm(prev => ({ ...prev, total_order_price_cny: response.data.total_order_price_cny }));
+      toast.success(fr ? 'Prix total recalculé!' : 'Total price recomputed!');
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur de calcul' : 'Estimation error'));
+    } finally {
+      setEstimating(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (isCbm && !parseFloat(form.unit_volume_cbm)) {
+      toast.error(fr ? 'Cette option est facturée au volume : renseignez le volume unitaire (CBM).' : 'This option is billed by volume: enter the unit volume (CBM).');
+      return;
+    }
+
+    const payload = {
+      title: form.title,
+      title_en: form.title_en,
+      status: form.status,
+      transitaire_id: form.transitaire_id,
+      shipping_option_id: form.shipping_option_id || null,
+      unit_price_cny: parseFloat(form.unit_price_cny),
+      unit_weight_kg: parseFloat(form.unit_weight_kg),
+      unit_volume_cbm: parseFloat(form.unit_volume_cbm) || null,
+      total_quantity: parseInt(form.total_quantity),
+      total_order_price_cny: parseFloat(form.total_order_price_cny),
+      min_members: parseInt(form.min_members),
+      max_members: parseInt(form.max_members),
+      local_price_fcfa: parseFloat(form.local_price_fcfa) || 0,
+      suggested_resale_price_fcfa: form.suggested_resale_price_fcfa === '' ? null : parseFloat(form.suggested_resale_price_fcfa)
+    };
+    if (form.deadline) payload.deadline = new Date(form.deadline).toISOString();
+    if (form.estimated_arrival) payload.estimated_arrival = new Date(form.estimated_arrival).toISOString();
+
+    setSaving(true);
+    try {
+      await api.put(`/admin/groupages/${groupage.groupage_id}`, payload);
+      toast.success(fr ? 'Groupage mis à jour!' : 'Groupage updated!');
+      onSaved();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const num = (v) => new Intl.NumberFormat('fr-FR').format(v);
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="edit-groupage-modal">
+        <div className="p-6 border-b border-[#2A2A2A] flex justify-between items-center">
+          <h2 className="font-['Bebas_Neue'] text-2xl">{fr ? 'Modifier le groupage' : 'Edit groupage'}</h2>
+          <button onClick={onClose} className="text-[#71717A] hover:text-white"><X className="w-6 h-6" /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Titre (FR)' : 'Title (FR)'}</label>
+              <input type="text" value={form.title} onChange={(e) => set({ title: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Statut' : 'Status'}</label>
+              <select value={form.status} onChange={(e) => set({ status: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md">
+                <option value="open">open</option>
+                <option value="closed">closed</option>
+                <option value="completed">completed</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Transitaire' : 'Forwarder'}</label>
+              <select
+                value={form.transitaire_id}
+                onChange={(e) => set({ transitaire_id: e.target.value, shipping_option_id: '' })}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                required
+                data-testid="edit-transitaire-select"
+              >
+                {transitaires.map(tr => (
+                  <option key={tr.transitaire_id} value={tr.transitaire_id}>
+                    {tr.name} ({tr.city}){tr.is_active === false ? (fr ? ' — inactif' : ' — inactive') : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Option de transport' : 'Shipping option'}</label>
+              <select
+                value={form.shipping_option_id}
+                onChange={(e) => set({ shipping_option_id: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                required={activeOptions.length > 0}
+                data-testid="edit-shipping-option-select"
+              >
+                <option value="">{fr ? '-- Choisir --' : '-- Select --'}</option>
+                {activeOptions.map(opt => (
+                  <option key={opt.option_id} value={opt.option_id}>
+                    {opt.label} — {num(opt.price_fcfa)} FCFA/{opt.unit === 'cbm' ? 'CBM' : 'kg'} ({opt.eta_min_days}-{opt.eta_max_days}j)
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {form.transitaire_id !== groupage.transitaire_id && (groupage.current_members || 0) > 0 && (
+            <p className="text-xs text-[#F97316]">
+              {fr
+                ? `⚠ ${groupage.current_members} membre(s) ont déjà rejoint avec les villes de retrait de l'ancien transitaire. Leur choix de ville est conservé — vérifiez la compatibilité avec le nouveau transitaire.`
+                : `⚠ ${groupage.current_members} member(s) already joined with the previous forwarder's pickup cities. Their city choice is kept — check compatibility with the new forwarder.`}
+            </p>
+          )}
+
+          <div className={isCbm ? 'grid grid-cols-2 md:grid-cols-4 gap-4' : 'grid grid-cols-2 md:grid-cols-3 gap-4'}>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix unitaire (CNY)' : 'Unit price (CNY)'}</label>
+              <input type="number" step="0.01" value={form.unit_price_cny}
+                onChange={(e) => set({ unit_price_cny: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Poids unit. (kg)' : 'Unit weight (kg)'}</label>
+              <input type="number" step="0.01" value={form.unit_weight_kg}
+                onChange={(e) => set({ unit_weight_kg: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            {isCbm && (
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Volume unit. (CBM)' : 'Unit volume (CBM)'}</label>
+                <input type="number" step="0.001" value={form.unit_volume_cbm}
+                  onChange={(e) => set({ unit_volume_cbm: e.target.value })}
+                  className="input-dark w-full px-4 py-2 rounded-md" required />
+              </div>
+            )}
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Quantité cible' : 'Target quantity'}</label>
+              <input type="number" value={form.total_quantity}
+                onChange={(e) => set({ total_quantity: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+              {(groupage.current_quantity_reserved || 0) > 0 && (
+                <p className="text-[10px] text-[#71717A] mt-1">
+                  {fr ? `${groupage.current_quantity_reserved} déjà réservées` : `${groupage.current_quantity_reserved} already reserved`}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix total commande (CNY)' : 'Total order price (CNY)'}</label>
+            <div className="flex gap-2">
+              <input type="number" step="0.01" value={form.total_order_price_cny}
+                onChange={(e) => setForm(prev => ({ ...prev, total_order_price_cny: e.target.value }))}
+                className="input-dark flex-1 px-4 py-2 rounded-md" required />
+              <button
+                type="button"
+                onClick={handleEstimate}
+                disabled={estimating || !form.transitaire_id || (activeOptions.length > 0 && !form.shipping_option_id)}
+                className="btn-outline px-3 py-2 rounded-md text-sm whitespace-nowrap flex items-center gap-1 disabled:opacity-50"
+                data-testid="edit-estimate-btn"
+              >
+                {estimating ? <Loader2 className="w-4 h-4 animate-spin" /> : '🧮'}
+                {fr ? 'Calculer selon transitaire' : 'Compute from forwarder'}
+              </button>
+            </div>
+            {estimate && (
+              <p className="text-xs text-[#71717A] mt-2">
+                {fr ? 'Marchandise' : 'Goods'}: {num(estimate.merchandise_fcfa)} FCFA
+                {' + '}{fr ? 'Transport' : 'Shipping'} ({estimate.unit_measure} {estimate.transport_unit === 'cbm' ? 'CBM' : 'kg'} × {estimate.total_quantity}) : {num(estimate.transport_total_fcfa)} FCFA
+                {' = '}<span className="text-[#D4AF37]">{num(estimate.total_order_price_fcfa)} FCFA</span>
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Min membres</label>
+              <input type="number" value={form.min_members} onChange={(e) => set({ min_members: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Max membres</label>
+              <input type="number" value={form.max_members} onChange={(e) => set({ max_members: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix local (FCFA)' : 'Local price (FCFA)'}</label>
+              <input type="number" value={form.local_price_fcfa} onChange={(e) => set({ local_price_fcfa: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix revente (FCFA)' : 'Resale price (FCFA)'}</label>
+              <input type="number" value={form.suggested_resale_price_fcfa}
+                onChange={(e) => set({ suggested_resale_price_fcfa: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">Deadline</label>
+              <input type="datetime-local" value={form.deadline} onChange={(e) => set({ deadline: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Arrivée estimée' : 'Estimated arrival'}</label>
+              <input type="datetime-local" value={form.estimated_arrival} onChange={(e) => set({ estimated_arrival: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" required />
+            </div>
+          </div>
+
+          <div className="flex gap-4 pt-2">
+            <button type="button" onClick={onClose} className="btn-outline px-6 py-3 rounded-md flex-1">
+              {fr ? 'Annuler' : 'Cancel'}
+            </button>
+            <button type="submit" disabled={saving}
+              className="btn-gold px-6 py-3 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="save-groupage-btn">
+              {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 };

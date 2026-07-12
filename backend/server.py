@@ -278,9 +278,10 @@ class GroupageCreate(BaseModel):
     transitaire_id: str  # ID du transitaire sélectionné
     shipping_option_id: Optional[str] = None  # Option de transport choisie (nouvelles fiches)
     
-    # Prix et poids
+    # Prix et poids/volume
     unit_price_cny: float  # Prix unitaire en CNY
     unit_weight_kg: float  # Poids unitaire en kg
+    unit_volume_cbm: Optional[float] = None  # Volume unitaire en m3 (requis si option maritime au CBM)
     
     # Commande totale
     total_quantity: int  # Quantité totale de la commande groupée
@@ -432,9 +433,20 @@ def get_transport_price_per_kg_fcfa(groupage: dict) -> float:
         return groupage["transport_price_per_kg_fcfa"]
     return groupage.get("transport_price_per_kg_cny", 0) * CNY_TO_FCFA
 
-def calculate_solo_price(unit_price_cny: float, unit_weight_kg: float, quantity: int, transport_price_per_kg_fcfa: float) -> dict:
+def get_per_item_transport_fcfa(groupage: dict) -> float:
+    """Cout transport FCFA pour UNE unite du produit, selon le mode de facturation
+    du transitaire : au poids (kg) ou au volume (CBM). Retro-compatible avec les
+    groupages historiques qui n'ont qu'un prix au kg."""
+    if groupage.get("transport_unit") == "cbm":
+        return (groupage.get("unit_volume_cbm") or 0) * (groupage.get("transport_price_fcfa") or 0)
+    price = groupage.get("transport_price_fcfa")
+    if price is None:
+        price = get_transport_price_per_kg_fcfa(groupage)
+    return (groupage.get("unit_weight_kg") or 0) * price
+
+def calculate_solo_price(unit_price_cny: float, quantity: int, per_item_transport_fcfa: float) -> dict:
     """
-    Calcul prix SEUL: Prix unitaire + 5 USD + (poids unitaire × quantité × prix transport)
+    Calcul prix SEUL: Prix unitaire + 5 USD + (transport unitaire × quantité)
     Tout converti en FCFA
     """
     unit_price_fcfa = unit_price_cny * CNY_TO_FCFA
@@ -442,7 +454,7 @@ def calculate_solo_price(unit_price_cny: float, unit_weight_kg: float, quantity:
 
     solo_fee_fcfa = SOLO_FEE_USD * USD_TO_FCFA
 
-    transport_cost_fcfa = unit_weight_kg * quantity * transport_price_per_kg_fcfa
+    transport_cost_fcfa = per_item_transport_fcfa * quantity
 
     total_solo = total_unit_price + solo_fee_fcfa + transport_cost_fcfa
     price_per_unit_solo = total_solo / quantity if quantity > 0 else 0
@@ -477,23 +489,20 @@ def calculate_groupage_price(total_order_price_cny: float, total_quantity: int, 
     # Prix unitaire (hors frais), utilise aussi pour estimer la quantite minimale
     price_per_unit_excl_fee = total_order_price_fcfa / total_quantity if total_quantity > 0 else 0
     
-    # Part du membre
+    # Part du membre, frais de service SilkRoute inclus. Les frais ne sont
+    # volontairement PAS exposes comme ligne separee dans la reponse : ils sont
+    # fondus dans le total pour ne pas divulguer notre structure de prix.
     member_share_fcfa = (share_percentage / 100) * total_order_price_fcfa
-    
-    # Total avec frais SilkRoute
     total_groupage = member_share_fcfa + SILKROUTE_FEE_FCFA
     price_per_unit_groupage = total_groupage / member_quantity if member_quantity > 0 else 0
-    
+
     meets_minimum = total_groupage >= MIN_GROUPAGE_TOTAL_FCFA
     min_quantity_needed = None
     if not meets_minimum and price_per_unit_excl_fee > 0:
         min_quantity_needed = math.ceil((MIN_GROUPAGE_TOTAL_FCFA - SILKROUTE_FEE_FCFA) / price_per_unit_excl_fee)
-    
+
     return {
         "share_percentage": round(share_percentage, 2),
-        "total_order_price_fcfa": round(total_order_price_fcfa, 0),
-        "member_share_fcfa": round(member_share_fcfa, 0),
-        "silkroute_fee_fcfa": SILKROUTE_FEE_FCFA,
         "total_fcfa": round(total_groupage, 0),
         "price_per_unit_fcfa": round(price_per_unit_groupage, 0),
         "quantity": member_quantity,
@@ -508,9 +517,8 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
     """
     solo = calculate_solo_price(
         groupage["unit_price_cny"],
-        groupage["unit_weight_kg"],
         quantity,
-        get_transport_price_per_kg_fcfa(groupage)
+        get_per_item_transport_fcfa(groupage)
     )
     
     groupage_price = calculate_groupage_price(
@@ -1386,7 +1394,7 @@ async def simulate_pricing(request: Request):
         raise HTTPException(status_code=400, detail="Invalid input values")
 
     # Calcul prix Solo
-    solo = calculate_solo_price(unit_price_cny, unit_weight_kg, quantity, transport_price_per_kg_fcfa)
+    solo = calculate_solo_price(unit_price_cny, quantity, unit_weight_kg * transport_price_per_kg_fcfa)
 
     # Estimation Groupage (simulation avec un groupe de 100 personnes)
     # Le prix groupé bénéficie de:
@@ -1649,7 +1657,7 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
     if not pricing.get("meets_minimum", True):
         raise HTTPException(
             status_code=400,
-            detail=f"Total minimum de {MIN_GROUPAGE_TOTAL_FCFA} FCFA (frais de service inclus) non atteint. "
+            detail=f"Total minimum de {MIN_GROUPAGE_TOTAL_FCFA} FCFA non atteint. "
                    f"Quantite minimale requise : {pricing.get('min_quantity_needed')}."
         )
 
@@ -1887,6 +1895,97 @@ async def require_admin(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
+def resolve_transport(transitaire: dict, shipping_option_id: Optional[str],
+                      unit_weight_kg: Optional[float], unit_volume_cbm: Optional[float]) -> dict:
+    """Resout l'option de transport d'un transitaire et verifie que la mesure
+    correspondante (poids pour /kg, volume pour /CBM) est renseignee.
+    Retourne l'option et les champs de tarification a stocker sur le groupage."""
+    options = transitaire.get("shipping_options") or []
+    if shipping_option_id:
+        option = next((o for o in options if o.get("option_id") == shipping_option_id), None)
+        if not option:
+            raise HTTPException(status_code=400, detail="Shipping option not found for this transitaire")
+        if option.get("unit") == "cbm" and not unit_volume_cbm:
+            raise HTTPException(
+                status_code=400,
+                detail="Cette option est facturee au volume : renseignez le volume unitaire (CBM) du produit."
+            )
+        if option.get("unit") == "kg" and not unit_weight_kg:
+            raise HTTPException(
+                status_code=400,
+                detail="Cette option est facturee au poids : renseignez le poids unitaire (kg) du produit."
+            )
+        return {
+            "option": option,
+            "fields": {
+                "shipping_option_id": option["option_id"],
+                "shipping_option_label": option.get("label"),
+                "transport_unit": option.get("unit", "kg"),
+                "transport_price_fcfa": option["price_fcfa"],
+                "transport_price_per_kg_fcfa": option["price_fcfa"] if option.get("unit") == "kg" else None,
+            }
+        }
+    if transitaire.get("shipping_price_per_kg_cny") is not None:
+        price_fcfa = transitaire["shipping_price_per_kg_cny"] * CNY_TO_FCFA
+        return {
+            "option": None,
+            "fields": {
+                "shipping_option_id": None,
+                "shipping_option_label": None,
+                "transport_unit": "kg",
+                "transport_price_fcfa": price_fcfa,
+                "transport_price_per_kg_fcfa": price_fcfa,
+            }
+        }
+    raise HTTPException(status_code=400, detail="Selectionnez une option de transport pour ce transitaire")
+
+def estimate_order_totals(unit_price_cny: float, total_quantity: int,
+                          transport_unit: str, transport_price_fcfa: float,
+                          unit_weight_kg: Optional[float], unit_volume_cbm: Optional[float]) -> dict:
+    """Estimation du prix tout compris de la commande groupee selon la formule du
+    transitaire : marchandise + transport (mesure unitaire x quantite cible x tarif)."""
+    measure = unit_volume_cbm if transport_unit == "cbm" else unit_weight_kg
+    measure = measure or 0
+    merchandise_cny = unit_price_cny * total_quantity
+    transport_total_fcfa = measure * total_quantity * transport_price_fcfa
+    transport_total_cny = transport_total_fcfa / CNY_TO_FCFA
+    total_cny = merchandise_cny + transport_total_cny
+    return {
+        "merchandise_cny": round(merchandise_cny, 2),
+        "merchandise_fcfa": round(merchandise_cny * CNY_TO_FCFA, 0),
+        "transport_total_fcfa": round(transport_total_fcfa, 0),
+        "transport_total_cny": round(transport_total_cny, 2),
+        "total_order_price_cny": round(total_cny, 2),
+        "total_order_price_fcfa": round(total_cny * CNY_TO_FCFA, 0),
+        "transport_unit": transport_unit,
+        "unit_measure": measure,
+        "total_quantity": total_quantity,
+    }
+
+@api_router.post("/admin/groupages/estimate")
+async def estimate_groupage_pricing(request: Request, admin: dict = Depends(require_admin)):
+    """Calcule le prix total estime de la commande selon la formule du transitaire
+    choisi (poids ou volume unitaire x quantite cible x tarif de l'option)."""
+    data = await request.json()
+    transitaire = await db.transitaires.find_one({"transitaire_id": data.get("transitaire_id")}, {"_id": 0})
+    if not transitaire:
+        raise HTTPException(status_code=400, detail="Transitaire not found")
+
+    unit_weight_kg = float(data.get("unit_weight_kg") or 0) or None
+    unit_volume_cbm = float(data.get("unit_volume_cbm") or 0) or None
+    transport = resolve_transport(transitaire, data.get("shipping_option_id"), unit_weight_kg, unit_volume_cbm)
+
+    unit_price_cny = float(data.get("unit_price_cny") or 0)
+    total_quantity = int(data.get("total_quantity") or 0)
+    if unit_price_cny <= 0 or total_quantity <= 0:
+        raise HTTPException(status_code=400, detail="unit_price_cny et total_quantity doivent etre positifs")
+
+    return estimate_order_totals(
+        unit_price_cny, total_quantity,
+        transport["fields"]["transport_unit"], transport["fields"]["transport_price_fcfa"],
+        unit_weight_kg, unit_volume_cbm
+    )
+
 @api_router.get("/admin/stats")
 async def get_admin_stats(user: dict = Depends(require_admin)):
     total_users = await db.users.count_documents({})
@@ -2026,25 +2125,13 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
     if not transitaire.get("is_active", True):
         raise HTTPException(status_code=400, detail="Transitaire is not active")
 
-    # Resoudre le prix transport au kg (FCFA) : soit via l'option choisie sur les
-    # nouvelles fiches, soit via l'ancien champ CNY des fiches historiques.
-    transport_price_per_kg_fcfa = None
-    shipping_option = None
-    options = transitaire.get("shipping_options") or []
-    if groupage_data.shipping_option_id:
-        shipping_option = next((o for o in options if o.get("option_id") == groupage_data.shipping_option_id), None)
-        if not shipping_option:
-            raise HTTPException(status_code=400, detail="Shipping option not found for this transitaire")
-        if shipping_option.get("unit") != "kg":
-            raise HTTPException(
-                status_code=400,
-                detail="Le comparateur de prix necessite une option facturee au kg (les options au CBM ne sont pas encore supportees pour les groupages)"
-            )
-        transport_price_per_kg_fcfa = shipping_option["price_fcfa"]
-    elif transitaire.get("shipping_price_per_kg_cny") is not None:
-        transport_price_per_kg_fcfa = transitaire["shipping_price_per_kg_cny"] * CNY_TO_FCFA
-    else:
-        raise HTTPException(status_code=400, detail="Selectionnez une option de transport pour ce transitaire")
+    transport = resolve_transport(
+        transitaire,
+        groupage_data.shipping_option_id,
+        groupage_data.unit_weight_kg,
+        groupage_data.unit_volume_cbm
+    )
+    shipping_option = transport["option"]
 
     # Fournisseur lie (facultatif) : verifie qu'il existe si fourni
     if groupage_data.supplier_id:
@@ -2076,9 +2163,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "transitaire_name": transitaire["name"],
         "transitaire_location": f"{transitaire['city']}, {transitaire['country']}",
         "transitaire_license": transitaire["license_number"],
-        "transport_price_per_kg_fcfa": transport_price_per_kg_fcfa,
-        "shipping_option_id": groupage_data.shipping_option_id,
-        "shipping_option_label": shipping_option.get("label") if shipping_option else None,
+        **transport["fields"],
         # Statut du transitaire sur ce groupage : "recommended" tant que la commande
         # n'est pas validee, puis "confirmed" ("Votre transitaire") une fois tout OK.
         "transitaire_status": "recommended",
@@ -2091,6 +2176,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         # Pricing
         "unit_price_cny": groupage_data.unit_price_cny,
         "unit_weight_kg": groupage_data.unit_weight_kg,
+        "unit_volume_cbm": groupage_data.unit_volume_cbm,
         "total_quantity": groupage_data.total_quantity,
         "total_order_price_cny": groupage_data.total_order_price_cny,
         "min_members": groupage_data.min_members,
@@ -2119,18 +2205,62 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
 
 @api_router.put("/admin/groupages/{groupage_id}")
 async def update_groupage(groupage_id: str, request: Request, user: dict = Depends(require_admin)):
+    """Edition complete d'un groupage. Si le transitaire ou l'option de transport
+    change, les infos snapshotees (nom, tarif, villes de retrait) sont resolues a
+    nouveau pour que les calculs de prix restent coherents."""
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+
     data = await request.json()
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
-                      "is_featured", "suggested_resale_price_fcfa", "transitaire_status"]
+                      "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
+                      "unit_price_cny", "unit_weight_kg", "unit_volume_cbm", "total_quantity",
+                      "total_order_price_cny", "min_members", "max_members",
+                      "deadline", "estimated_arrival", "local_price_fcfa"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
 
     if "transitaire_status" in update_data and update_data["transitaire_status"] not in ("recommended", "confirmed"):
         raise HTTPException(status_code=400, detail="transitaire_status must be 'recommended' or 'confirmed'")
 
+    # La quantite cible ne peut pas descendre sous ce qui est deja reserve
+    if "total_quantity" in update_data:
+        reserved = groupage.get("current_quantity_reserved", 0)
+        if int(update_data["total_quantity"]) < reserved:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Quantite cible trop basse : {reserved} unites sont deja reservees par les membres."
+            )
+
+    # Changement de transitaire et/ou d'option de transport : re-resolution complete
+    new_transitaire_id = data.get("transitaire_id")
+    new_option_id = data.get("shipping_option_id")
+    if new_transitaire_id or new_option_id:
+        transitaire_id = new_transitaire_id or groupage["transitaire_id"]
+        transitaire = await db.transitaires.find_one({"transitaire_id": transitaire_id}, {"_id": 0})
+        if not transitaire:
+            raise HTTPException(status_code=400, detail="Transitaire not found")
+        if not transitaire.get("is_active", True):
+            raise HTTPException(status_code=400, detail="Transitaire is not active")
+
+        unit_weight_kg = update_data.get("unit_weight_kg", groupage.get("unit_weight_kg"))
+        unit_volume_cbm = update_data.get("unit_volume_cbm", groupage.get("unit_volume_cbm"))
+        transport = resolve_transport(transitaire, new_option_id, unit_weight_kg, unit_volume_cbm)
+
+        update_data.update({
+            "transitaire_id": transitaire["transitaire_id"],
+            "transitaire_name": transitaire["name"],
+            "transitaire_location": f"{transitaire['city']}, {transitaire['country']}",
+            "transitaire_license": transitaire["license_number"],
+            "pickup_cities": transitaire.get("service_cities") or [],
+            **transport["fields"],
+        })
+
     if update_data:
         await db.groupages.update_one({"groupage_id": groupage_id}, {"$set": update_data})
 
-    return {"message": "Groupage updated"}
+    updated = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0})
+    return updated
 
 @api_router.get("/admin/groupages/{groupage_id}/pickup-summary")
 async def pickup_summary(groupage_id: str, user: dict = Depends(require_admin)):

@@ -594,16 +594,12 @@ const GroupageDetailPage = () => {
                       </h4>
                       <div className="space-y-2 text-sm mb-4">
                         <div className="flex justify-between">
-                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Votre part' : 'Your share'}</span>
+                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Votre part de la commande' : 'Your share of the order'}</span>
                           <span>{pricing.groupage_price?.share_percentage}%</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Part du prix total' : 'Share of total'}</span>
-                          <span>{formatPrice(pricing.groupage_price?.member_share_fcfa)} FCFA</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Frais SilkRoute' : 'SilkRoute fee'}</span>
-                          <span>{formatPrice(pricing.groupage_price?.silkroute_fee_fcfa)} FCFA</span>
+                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Quantité' : 'Quantity'}</span>
+                          <span>×{quantity}</span>
                         </div>
                       </div>
                       <div className="border-t border-[#D4AF37]/30 pt-4">
