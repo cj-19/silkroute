@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
+import httpx
 import socketio
 import cloudinary
 import cloudinary.utils
@@ -184,6 +185,10 @@ class TransitaireCreate(BaseModel):
     contact_email: Optional[str] = None
     website: Optional[str] = None
     shipping_options: List[ShippingOption] = []
+    # Villes ou le transitaire livre / ou les membres peuvent recuperer leur
+    # marchandise. Chaque membre choisit SA ville de retrait en rejoignant un
+    # groupage (choix definitif), ce qui permet le split de la commande par ville.
+    service_cities: List[str] = []
     is_active: bool = True
 
 # Fournisseur (fiche geree par l'admin, liee ensuite aux groupages)
@@ -333,6 +338,26 @@ class GroupageResponse(BaseModel):
 
 class JoinGroupage(BaseModel):
     quantity: int
+    # Ville de retrait choisie parmi les villes de desserte du transitaire.
+    # Ce choix est DEFINITIF (le split de la commande par ville est convenu avec
+    # le transitaire) : aucune route ne permet de le modifier apres l'adhesion.
+    pickup_city: Optional[str] = None
+    # Acceptation explicite d'aller recuperer la marchandise dans cette ville
+    accept_pickup: bool = False
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def new_password_min_length(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters long")
+        return v
 
 class PaymentCreate(BaseModel):
     groupage_id: str
@@ -753,7 +778,7 @@ async def update_transitaire(transitaire_id: str, request: Request, user: dict =
 
     data = await request.json()
     allowed_fields = ["name", "city", "country", "license_number", "contact_phone", "contact_email",
-                      "website", "shipping_options", "is_active"]
+                      "website", "shipping_options", "service_cities", "is_active"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
 
     if "shipping_options" in update_data:
@@ -922,6 +947,120 @@ async def change_password(payload: ChangePassword, user: dict = Depends(get_curr
         {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}}
     )
     return {"message": "Password changed"}
+
+# ========================
+# PASSWORD RESET (mot de passe oublie, emails via Resend)
+# ========================
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+RESEND_FROM = os.environ.get("RESEND_FROM", "SilkRoute <onboarding@resend.dev>")
+RESET_TOKEN_TTL_MINUTES = 60
+
+def _frontend_base_url() -> str:
+    """Base URL du frontend pour construire le lien de reinitialisation :
+    FRONTEND_URL si definie, sinon la premiere origine CORS configuree."""
+    explicit = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    origins = [o.strip().rstrip("/") for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+    return origins[0] if origins else ""
+
+async def send_reset_email(to_email: str, reset_link: str) -> bool:
+    if not RESEND_API_KEY:
+        logger.error("RESEND_API_KEY is not configured - cannot send password reset email")
+        return False
+
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto">
+      <h2 style="color:#0A0A0A">SilkRoute — Réinitialisation du mot de passe</h2>
+      <p>Vous avez demandé la réinitialisation de votre mot de passe.</p>
+      <p style="margin:24px 0">
+        <a href="{reset_link}" style="background:#D4AF37;color:#0A0A0A;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:bold">
+          Choisir un nouveau mot de passe
+        </a>
+      </p>
+      <p style="color:#666;font-size:13px">Ce lien expire dans {RESET_TOKEN_TTL_MINUTES} minutes.
+      Si vous n'êtes pas à l'origine de cette demande, ignorez simplement cet email — votre mot de passe restera inchangé.</p>
+    </div>
+    """
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={
+                    "from": RESEND_FROM,
+                    "to": [to_email],
+                    "subject": "SilkRoute — Réinitialisation de votre mot de passe",
+                    "html": html
+                },
+                timeout=15
+            )
+        if response.status_code >= 400:
+            logger.error(f"Resend API error {response.status_code}: {response.text}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Failed to send reset email: {e}")
+        return False
+
+@api_router.post("/auth/forgot-password")
+@limiter.limit("5/hour")
+async def forgot_password(request: Request, payload: ForgotPassword):
+    """Envoie un lien de reinitialisation par email. Repond toujours pareil, que
+    l'email existe ou non, pour ne pas permettre d'enumerer les comptes."""
+    generic_response = {"message": "Si un compte existe avec cet email, un lien de réinitialisation a été envoyé."}
+
+    user = await db.users.find_one({"email": payload.email})
+    if not user:
+        return generic_response
+
+    # Jeton a usage unique : seul son hash est stocke en base, comme un mot de passe
+    token = secrets.token_urlsafe(32)
+    await db.password_resets.insert_one({
+        "user_id": user["user_id"],
+        "token_hash": hash_password(token),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)).isoformat(),
+        "used": False,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    })
+
+    base_url = _frontend_base_url()
+    reset_link = f"{base_url}/reset-password?token={token}"
+    sent = await send_reset_email(payload.email, reset_link)
+    if not sent:
+        logger.error(f"Reset email could not be sent to user {user['user_id']}")
+
+    return generic_response
+
+@api_router.post("/auth/reset-password")
+@limiter.limit("10/hour")
+async def reset_password(request: Request, payload: ResetPassword):
+    """Valide le jeton recu par email et applique le nouveau mot de passe."""
+    now = datetime.now(timezone.utc)
+    candidates = await db.password_resets.find({"used": False}).sort("created_at", -1).to_list(200)
+
+    matched = None
+    for candidate in candidates:
+        expires_at = datetime.fromisoformat(candidate["expires_at"])
+        if expires_at < now:
+            continue
+        if verify_password(payload.token, candidate["token_hash"]):
+            matched = candidate
+            break
+
+    if not matched:
+        raise HTTPException(status_code=400, detail="Lien invalide ou expiré. Refaites une demande de réinitialisation.")
+
+    await db.users.update_one(
+        {"user_id": matched["user_id"]},
+        {"$set": {"password_hash": hash_password(payload.new_password), "must_change_password": False}}
+    )
+    await db.password_resets.update_one(
+        {"_id": matched["_id"]},
+        {"$set": {"used": True, "used_at": now.isoformat()}}
+    )
+    return {"message": "Mot de passe réinitialisé. Vous pouvez maintenant vous connecter."}
 
 # ========================
 # PARTNER PORTAL (transitaire & fournisseur)
@@ -1342,15 +1481,42 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
             detail=f"Total minimum de {MIN_GROUPAGE_TOTAL_FCFA} FCFA (frais de service inclus) non atteint. "
                    f"Quantite minimale requise : {pricing.get('min_quantity_needed')}."
         )
-    
+
+    # Ville de retrait : obligatoire des que le groupage a des villes de desserte.
+    # Le membre doit accepter EXPLICITEMENT d'aller recuperer sa marchandise dans
+    # la ville choisie, et ce choix est definitif (aucune route ne le modifie).
+    pickup_cities = groupage.get("pickup_cities") or []
+    pickup_city = None
+    if pickup_cities:
+        if not join_data.pickup_city:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Choisissez votre ville de retrait parmi : {', '.join(pickup_cities)}"
+            )
+        matched = next((c for c in pickup_cities if c.strip().lower() == join_data.pickup_city.strip().lower()), None)
+        if not matched:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ville de retrait invalide. Villes desservies : {', '.join(pickup_cities)}"
+            )
+        if not join_data.accept_pickup:
+            raise HTTPException(
+                status_code=400,
+                detail="Vous devez accepter explicitement d'aller recuperer votre marchandise dans la ville choisie. Ce choix est definitif."
+            )
+        pickup_city = matched
+
     member_doc = {
         "member_id": f"member_{uuid.uuid4().hex[:12]}",
         "groupage_id": groupage_id,
         "user_id": user["user_id"],
         "user_name": user["name"],
+        "user_location": user.get("location"),
         "quantity": join_data.quantity,
         "share_percentage": pricing["share_percentage"],
         "total_price_fcfa": pricing["total_fcfa"],
+        "pickup_city": pickup_city,
+        "pickup_accepted_at": datetime.now(timezone.utc).isoformat() if pickup_city else None,
         "caution_paid": False,
         "solde_paid": False,
         "joined_at": datetime.now(timezone.utc).isoformat()
@@ -1666,6 +1832,12 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "transport_price_per_kg_fcfa": transport_price_per_kg_fcfa,
         "shipping_option_id": groupage_data.shipping_option_id,
         "shipping_option_label": shipping_option.get("label") if shipping_option else None,
+        # Statut du transitaire sur ce groupage : "recommended" tant que la commande
+        # n'est pas validee, puis "confirmed" ("Votre transitaire") une fois tout OK.
+        "transitaire_status": "recommended",
+        # Villes de retrait possibles, figees a la creation (snapshot des villes de
+        # desserte du transitaire) : chaque membre en choisit une en rejoignant.
+        "pickup_cities": transitaire.get("service_cities") or [],
         # Suivi d'expedition
         "shipment_status": "preparation",
         "shipment_timeline": [],
@@ -1701,13 +1873,31 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
 @api_router.put("/admin/groupages/{groupage_id}")
 async def update_groupage(groupage_id: str, request: Request, user: dict = Depends(require_admin)):
     data = await request.json()
-    allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url", "is_featured", "suggested_resale_price_fcfa"]
+    allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
+                      "is_featured", "suggested_resale_price_fcfa", "transitaire_status"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
-    
+
+    if "transitaire_status" in update_data and update_data["transitaire_status"] not in ("recommended", "confirmed"):
+        raise HTTPException(status_code=400, detail="transitaire_status must be 'recommended' or 'confirmed'")
+
     if update_data:
         await db.groupages.update_one({"groupage_id": groupage_id}, {"$set": update_data})
-    
+
     return {"message": "Groupage updated"}
+
+@api_router.get("/admin/groupages/{groupage_id}/pickup-summary")
+async def pickup_summary(groupage_id: str, user: dict = Depends(require_admin)):
+    """Repartition des membres par ville de retrait — sert a organiser le split
+    de la commande groupee avec le transitaire."""
+    members = await db.groupage_members.find({"groupage_id": groupage_id}, {"_id": 0}).to_list(500)
+    summary = {}
+    for m in members:
+        city = m.get("pickup_city") or "Non renseignee"
+        if city not in summary:
+            summary[city] = {"members": 0, "quantity": 0}
+        summary[city]["members"] += 1
+        summary[city]["quantity"] += m.get("quantity", 0)
+    return {"groupage_id": groupage_id, "by_city": summary}
 
 @api_router.post("/admin/groupages/{groupage_id}/logistics-docs")
 async def add_logistics_document(groupage_id: str, doc: LogisticsDocument, user: dict = Depends(require_admin)):

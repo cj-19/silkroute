@@ -35,6 +35,9 @@ const GroupageDetailPage = () => {
   const [newMessage, setNewMessage] = useState('');
   const [joining, setJoining] = useState(false);
   const [quantity, setQuantity] = useState(1);
+  const [showJoinConfirm, setShowJoinConfirm] = useState(false);
+  const [pickupCity, setPickupCity] = useState('');
+  const [acceptPickup, setAcceptPickup] = useState(false);
   
   const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
@@ -135,21 +138,35 @@ const GroupageDetailPage = () => {
     setNewMessage('');
   };
 
-  const handleJoinGroupage = async () => {
+  const pickupCities = groupage?.pickup_cities || [];
+
+  // Ouvre la confirmation de ville de retrait si le transitaire en a, sinon rejoint directement
+  const handleJoinClick = () => {
     if (!isAuthenticated) {
       navigate('/login');
       return;
     }
-
     if (user.kyc_status !== 'validated') {
       toast.error(t('kyc.required'));
       return;
     }
+    if (pickupCities.length > 0) {
+      setShowJoinConfirm(true);
+    } else {
+      handleJoinGroupage();
+    }
+  };
 
+  const handleJoinGroupage = async () => {
     setJoining(true);
     try {
-      await api.post(`/groupages/${id}/join`, { quantity });
+      await api.post(`/groupages/${id}/join`, {
+        quantity,
+        pickup_city: pickupCity || null,
+        accept_pickup: acceptPickup
+      });
       toast.success(i18n.language === 'fr' ? 'Groupage rejoint!' : 'Joined groupage!');
+      setShowJoinConfirm(false);
 
       const origin = window.location.origin;
       const paymentRes = await api.post('/payments/checkout', {
@@ -360,7 +377,7 @@ const GroupageDetailPage = () => {
                   )}
                   
                   <button
-                    onClick={handleJoinGroupage}
+                    onClick={handleJoinClick}
                     disabled={joining || (pricing && pricing.groupage_price?.meets_minimum === false)}
                     className="w-full btn-gold py-3 rounded-md font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     data-testid="join-groupage-btn"
@@ -440,12 +457,21 @@ const GroupageDetailPage = () => {
 
             {/* Transitaire Card */}
             <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6" data-testid="transitaire-card">
-              <h3 className="font-['Bebas_Neue'] text-xl mb-4 flex items-center gap-2">
+              <h3 className="font-['Bebas_Neue'] text-xl mb-1 flex items-center gap-2">
                 <Shield className="w-5 h-5 text-[#D4AF37]" />
-                {t('groupage.transitaire')}
+                {groupage.transitaire_status === 'confirmed'
+                  ? (i18n.language === 'fr' ? 'Votre transitaire' : 'Your forwarder')
+                  : (i18n.language === 'fr' ? 'Transitaire recommandé' : 'Recommended forwarder')}
               </h3>
-              
-              <div className="space-y-3">
+              {groupage.transitaire_status !== 'confirmed' && (
+                <p className="text-xs text-[#71717A] mb-4">
+                  {i18n.language === 'fr'
+                    ? 'Le transitaire sera confirmé à la validation de la commande groupée.'
+                    : 'The forwarder will be confirmed when the group order is validated.'}
+                </p>
+              )}
+
+              <div className="space-y-3 mt-3">
                 <div className="flex justify-between">
                   <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Nom' : 'Name'}</span>
                   <span className="text-white font-medium">{groupage.transitaire_name}</span>
@@ -458,6 +484,12 @@ const GroupageDetailPage = () => {
                   <span className="text-[#71717A]">{t('groupage.license')}</span>
                   <span className="text-white">{groupage.transitaire_license}</span>
                 </div>
+                {pickupCities.length > 0 && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Villes de retrait' : 'Pickup cities'}</span>
+                    <span className="text-white text-right">{pickupCities.join(', ')}</span>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -822,6 +854,7 @@ const GroupageDetailPage = () => {
                             <p className="font-medium">{member.user_name}</p>
                             <p className="text-xs text-[#71717A]">
                               {member.quantity} {i18n.language === 'fr' ? 'unités' : 'units'} ({member.share_percentage}%)
+                              {member.pickup_city && ` · ${i18n.language === 'fr' ? 'Retrait' : 'Pickup'}: ${member.pickup_city}`}
                             </p>
                           </div>
                         </div>
@@ -845,6 +878,89 @@ const GroupageDetailPage = () => {
             </div>
           </div>
         </div>
+
+        {/* Confirmation de la ville de retrait avant d'adherer (choix DEFINITIF) */}
+        {showJoinConfirm && (
+          <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+            <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-md p-6" data-testid="pickup-confirm-modal">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-['Bebas_Neue'] text-2xl">
+                  {i18n.language === 'fr' ? 'Ville de retrait' : 'Pickup city'}
+                </h3>
+                <button
+                  onClick={() => { setShowJoinConfirm(false); setAcceptPickup(false); }}
+                  className="text-[#71717A] hover:text-white"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <p className="text-sm text-[#A1A1AA] mb-4">
+                {i18n.language === 'fr'
+                  ? `Votre marchandise (${quantity} unité${quantity > 1 ? 's' : ''}) sera à récupérer auprès du transitaire ${groupage.transitaire_name}. Choisissez votre ville de retrait :`
+                  : `Your goods (${quantity} unit${quantity > 1 ? 's' : ''}) will be picked up from forwarder ${groupage.transitaire_name}. Choose your pickup city:`}
+              </p>
+
+              <div className="space-y-2 mb-4">
+                {pickupCities.map(city => (
+                  <label
+                    key={city}
+                    className={`flex items-center gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
+                      pickupCity === city
+                        ? 'border-[#D4AF37] bg-[#D4AF37]/10'
+                        : 'border-[#2A2A2A] bg-[#0A0A0A] hover:border-[#71717A]'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="pickup_city"
+                      value={city}
+                      checked={pickupCity === city}
+                      onChange={() => setPickupCity(city)}
+                      className="accent-[#D4AF37]"
+                      data-testid={`pickup-city-${city}`}
+                    />
+                    <MapPin className="w-4 h-4 text-[#D4AF37]" />
+                    <span className="font-medium">{city}</span>
+                  </label>
+                ))}
+              </div>
+
+              <div className="bg-[#F97316]/10 border border-[#F97316]/20 rounded-md p-3 mb-4">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={acceptPickup}
+                    onChange={(e) => setAcceptPickup(e.target.checked)}
+                    className="mt-1 accent-[#D4AF37]"
+                    data-testid="accept-pickup-checkbox"
+                  />
+                  <span className="text-sm text-[#F97316]">
+                    {i18n.language === 'fr'
+                      ? "J'accepte d'aller récupérer ma marchandise dans la ville choisie ci-dessus. Je comprends que ce choix est DÉFINITIF et ne pourra plus être modifié après mon adhésion."
+                      : 'I agree to pick up my goods in the city selected above. I understand this choice is FINAL and cannot be changed after joining.'}
+                  </span>
+                </label>
+              </div>
+
+              <button
+                onClick={handleJoinGroupage}
+                disabled={joining || !pickupCity || !acceptPickup}
+                className="w-full btn-gold py-3 rounded-md font-semibold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="confirm-join-btn"
+              >
+                {joining ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <>
+                    <CreditCard className="w-5 h-5" />
+                    {i18n.language === 'fr' ? 'Confirmer et payer la caution' : 'Confirm and pay deposit'}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </Layout>
   );

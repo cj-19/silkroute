@@ -17,6 +17,8 @@ import AdminPage from "@/pages/AdminPage";
 import PaymentSuccessPage from "@/pages/PaymentSuccessPage";
 import ChangePasswordPage from "@/pages/ChangePasswordPage";
 import PartnerPage from "@/pages/PartnerPage";
+import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
+import ResetPasswordPage from "@/pages/ResetPasswordPage";
 
 // Protected Route Component
 const ProtectedRoute = ({ children, adminOnly = false, roles = null }) => {
@@ -57,6 +59,8 @@ const AppRouter = () => {
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/groupages" element={<GroupagesPage />} />
       <Route path="/groupages/:id" element={<GroupageDetailPage />} />
       <Route path="/payment/success" element={<PaymentSuccessPage />} />

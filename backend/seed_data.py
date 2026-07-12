@@ -51,6 +51,8 @@ TRANSITAIRES = [
         "contact_phone": "+86 185 8859 5637",
         "contact_email": None,
         "website": "https://www.tatocargo.com",
+        # Villes ou les membres peuvent recuperer leur marchandise - A ADAPTER
+        "service_cities": ["Douala", "Yaounde"],
         "shipping_options": [
             {
                 "option_id": "opt_air_normal",

@@ -5,7 +5,7 @@ import { Layout } from '@/components/Layout';
 import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
-  Truck, Factory, KeyRound, Pencil, Copy, RefreshCw
+  Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -220,6 +220,30 @@ const AdminGroupages = () => {
   const [groupages, setGroupages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [pickupSummary, setPickupSummary] = useState(null); // {title, by_city}
+  const fr = i18n.language === 'fr';
+
+  const toggleTransitaireStatus = async (groupage) => {
+    const newStatus = groupage.transitaire_status === 'confirmed' ? 'recommended' : 'confirmed';
+    try {
+      await api.put(`/admin/groupages/${groupage.groupage_id}`, { transitaire_status: newStatus });
+      toast.success(newStatus === 'confirmed'
+        ? (fr ? 'Transitaire confirmé — les membres voient "Votre transitaire".' : 'Forwarder confirmed — members now see "Your forwarder".')
+        : (fr ? 'Repassé en "Transitaire recommandé".' : 'Back to "Recommended forwarder".'));
+      fetchGroupages();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || t('common.error'));
+    }
+  };
+
+  const showPickupSummary = async (groupage) => {
+    try {
+      const response = await api.get(`/admin/groupages/${groupage.groupage_id}/pickup-summary`);
+      setPickupSummary({ title: groupage.title, by_city: response.data.by_city });
+    } catch (error) {
+      toast.error(t('common.error'));
+    }
+  };
 
   useEffect(() => {
     fetchGroupages();
@@ -269,6 +293,7 @@ const AdminGroupages = () => {
               <th>{i18n.language === 'fr' ? 'Titre' : 'Title'}</th>
               <th>{i18n.language === 'fr' ? 'Statut' : 'Status'}</th>
               <th>{i18n.language === 'fr' ? 'Membres' : 'Members'}</th>
+              <th>{i18n.language === 'fr' ? 'Transitaire' : 'Forwarder'}</th>
               <th>{i18n.language === 'fr' ? 'Deadline' : 'Deadline'}</th>
               <th></th>
             </tr>
@@ -283,14 +308,39 @@ const AdminGroupages = () => {
                   </span>
                 </td>
                 <td>{groupage.current_members}/{groupage.min_members}</td>
+                <td>
+                  <button
+                    onClick={() => toggleTransitaireStatus(groupage)}
+                    className={`px-2 py-1 rounded text-xs whitespace-nowrap ${
+                      groupage.transitaire_status === 'confirmed'
+                        ? 'bg-[#22C55E]/20 text-[#22C55E]'
+                        : 'bg-[#F97316]/20 text-[#F97316] hover:bg-[#F97316]/30'
+                    }`}
+                    title={fr ? 'Cliquer pour basculer recommandé/confirmé' : 'Click to toggle recommended/confirmed'}
+                    data-testid={`transitaire-status-${groupage.groupage_id}`}
+                  >
+                    {groupage.transitaire_status === 'confirmed'
+                      ? (fr ? '✓ Confirmé' : '✓ Confirmed')
+                      : (fr ? 'Recommandé' : 'Recommended')}
+                  </button>
+                </td>
                 <td>{new Date(groupage.deadline).toLocaleDateString()}</td>
                 <td>
-                  <Link
-                    to={`/groupages/${groupage.groupage_id}`}
-                    className="text-[#D4AF37] hover:underline"
-                  >
-                    <Eye className="w-5 h-5" />
-                  </Link>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => showPickupSummary(groupage)}
+                      className="text-[#A1A1AA] hover:text-[#D4AF37]"
+                      title={fr ? 'Répartition par ville de retrait' : 'Split by pickup city'}
+                    >
+                      <MapPin className="w-5 h-5" />
+                    </button>
+                    <Link
+                      to={`/groupages/${groupage.groupage_id}`}
+                      className="text-[#D4AF37] hover:underline"
+                    >
+                      <Eye className="w-5 h-5" />
+                    </Link>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -307,6 +357,40 @@ const AdminGroupages = () => {
             fetchGroupages();
           }}
         />
+      )}
+
+      {/* Repartition par ville de retrait (pour organiser le split avec le transitaire) */}
+      {pickupSummary && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setPickupSummary(null)}>
+          <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="font-['Bebas_Neue'] text-xl">
+                {fr ? 'Répartition par ville' : 'Split by city'}
+              </h3>
+              <button onClick={() => setPickupSummary(null)} className="text-[#71717A] hover:text-white">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-sm text-[#71717A] mb-4 truncate">{pickupSummary.title}</p>
+            {Object.keys(pickupSummary.by_city).length === 0 ? (
+              <p className="text-[#A1A1AA] text-sm">{fr ? 'Aucun membre pour le moment.' : 'No members yet.'}</p>
+            ) : (
+              <div className="space-y-2">
+                {Object.entries(pickupSummary.by_city).map(([city, data]) => (
+                  <div key={city} className="flex justify-between items-center bg-[#0A0A0A] rounded-md px-4 py-3">
+                    <span className="font-medium flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-[#D4AF37]" />
+                      {city}
+                    </span>
+                    <span className="text-sm text-[#A1A1AA]">
+                      {data.members} {fr ? 'membre(s)' : 'member(s)'} · {data.quantity} {fr ? 'unités' : 'units'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1210,6 +1294,11 @@ const AdminTransitaires = () => {
                     {tr.city}, {tr.country} · {fr ? 'Licence' : 'License'}: {tr.license_number}
                     {tr.contact_phone && ` · ${tr.contact_phone}`}
                   </p>
+                  {(tr.service_cities || []).length > 0 && (
+                    <p className="text-xs text-[#71717A] mt-1">
+                      {fr ? 'Villes de desserte' : 'Service cities'}: {tr.service_cities.join(', ')}
+                    </p>
+                  )}
                 </div>
                 <button
                   onClick={() => setEditing(tr)}
@@ -1272,6 +1361,7 @@ const TransitaireModal = ({ transitaire, fr, onClose, onSaved }) => {
     contact_phone: transitaire?.contact_phone || '',
     contact_email: transitaire?.contact_email || '',
     website: transitaire?.website || '',
+    service_cities: (transitaire?.service_cities || []).join(', '),
     is_active: transitaire?.is_active !== false
   });
   const [options, setOptions] = useState(
@@ -1307,6 +1397,7 @@ const TransitaireModal = ({ transitaire, fr, onClose, onSaved }) => {
       contact_email: form.contact_email || null,
       website: form.website || null,
       shipping_options: cleanedOptions,
+      service_cities: form.service_cities.split(',').map(c => c.trim()).filter(Boolean),
       is_active: form.is_active
     };
 
@@ -1382,6 +1473,24 @@ const TransitaireModal = ({ transitaire, fr, onClose, onSaved }) => {
               <input type="url" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })}
                 className="input-dark w-full px-4 py-2 rounded-md" placeholder="https://..." />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">
+              {fr ? 'Villes de desserte (séparées par des virgules)' : 'Service cities (comma separated)'}
+            </label>
+            <input
+              type="text"
+              value={form.service_cities}
+              onChange={(e) => setForm({ ...form, service_cities: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md"
+              placeholder={fr ? 'Douala, Yaoundé, Bafoussam' : 'Douala, Yaounde, Bafoussam'}
+              data-testid="service-cities-input"
+            />
+            <p className="text-xs text-[#71717A] mt-1">
+              {fr ? 'Chaque membre devra choisir SA ville de retrait parmi cette liste en rejoignant un groupage (choix définitif, utilisé pour le split de la commande).'
+                  : 'Each member will pick THEIR pickup city from this list when joining a groupage (final choice, used to split the order).'}
+            </p>
           </div>
 
           {/* Options de transport */}
