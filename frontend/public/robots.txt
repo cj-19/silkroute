@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /settings
+Disallow: /partenaire
+
+Sitemap: https://www.silkroute.africa/sitemap.xml

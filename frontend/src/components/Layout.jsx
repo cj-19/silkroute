@@ -48,14 +48,22 @@ export const Navbar = () => {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center gap-6">
-            <Link 
-              to="/groupages" 
+            <Link
+              to="/groupages"
               className="text-[#A1A1AA] hover:text-white transition-colors"
               data-testid="nav-groupages"
             >
               {t('nav.groupages')}
             </Link>
-            
+
+            <Link
+              to="/faq"
+              className="text-[#A1A1AA] hover:text-white transition-colors"
+              data-testid="nav-faq"
+            >
+              FAQ
+            </Link>
+
             {isAuthenticated && (
               <Link 
                 to="/dashboard" 
@@ -254,6 +262,9 @@ export const Footer = () => {
           </div>
           
           <div className="flex items-center gap-6 text-sm">
+            <Link to="/faq" className="text-[#A1A1AA] hover:text-white transition-colors">
+              FAQ
+            </Link>
             <Link to="/terms" className="text-[#A1A1AA] hover:text-white transition-colors">
               {t('footer.terms')}
             </Link>

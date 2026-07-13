@@ -21,6 +21,7 @@ import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
 import ResetPasswordPage from "@/pages/ResetPasswordPage";
 import VerifyEmailPage from "@/pages/VerifyEmailPage";
 import SettingsPage from "@/pages/SettingsPage";
+import FAQPage from "@/pages/FAQPage";
 
 // Protected Route Component
 const ProtectedRoute = ({ children, adminOnly = false, roles = null }) => {
@@ -64,6 +65,7 @@ const AppRouter = () => {
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/faq" element={<FAQPage />} />
 
       <Route path="/settings" element={
         <ProtectedRoute>
