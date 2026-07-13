@@ -580,7 +580,7 @@ const GroupageDetailPage = () => {
                           <span>{formatPrice(pricing.solo_price?.subtotal_fcfa)} FCFA</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Frais fixes' : 'Fixed fee'} (5 USD)</span>
+                          <span className="text-[#71717A]">{i18n.language === 'fr' ? 'Frais fixes (dédouanement, agent...)' : 'Fixed fees (customs, agent...)'}</span>
                           <span>{formatPrice(pricing.solo_price?.solo_fee_fcfa)} FCFA</span>
                         </div>
                         <div className="flex justify-between">

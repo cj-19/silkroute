@@ -60,7 +60,9 @@ USD_TO_FCFA = 615  # Taux de conversion USD -> FCFA
 CNY_TO_FCFA = 85   # Taux de conversion CNY -> FCFA
 SILKROUTE_FEE_FCFA = 5000  # Frais SilkRoute fixes
 MIN_GROUPAGE_TOTAL_FCFA = 25000  # Total minimum (frais de service inclus) pour pouvoir rejoindre un groupage
-SOLO_FEE_USD = 5  # Frais fixes pour commande solo en USD
+# Frais fixes estimes pour une commande en solo (dedouanement, agent, minimum
+# transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
+SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
 
 # Phases d'expedition d'un groupage, dans l'ordre. Mises a jour par le transitaire
 # (ou l'admin) et affichees aux membres sur la page du groupage.
@@ -446,13 +448,13 @@ def get_per_item_transport_fcfa(groupage: dict) -> float:
 
 def calculate_solo_price(unit_price_cny: float, quantity: int, per_item_transport_fcfa: float) -> dict:
     """
-    Calcul prix SEUL: Prix unitaire + 5 USD + (transport unitaire × quantité)
+    Calcul prix SEUL: Prix unitaire + frais fixes (SOLO_FEE_FCFA) + (transport unitaire × quantité)
     Tout converti en FCFA
     """
     unit_price_fcfa = unit_price_cny * CNY_TO_FCFA
     total_unit_price = unit_price_fcfa * quantity
 
-    solo_fee_fcfa = SOLO_FEE_USD * USD_TO_FCFA
+    solo_fee_fcfa = SOLO_FEE_FCFA
 
     transport_cost_fcfa = per_item_transport_fcfa * quantity
 
