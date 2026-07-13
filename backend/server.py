@@ -281,7 +281,11 @@ class GroupageCreate(BaseModel):
     shipping_option_id: Optional[str] = None  # Option de transport choisie (nouvelles fiches)
     
     # Prix et poids/volume
-    unit_price_cny: float  # Prix unitaire en CNY
+    unit_price_cny: float  # Prix unitaire DE GROS en CNY (palier atteint avec la quantite cible)
+    # Prix unitaire AU DETAIL (petite quantite) : celui qu'un acheteur seul paierait.
+    # C'est lui qui alimente la colonne "commande SEUL" du comparateur - c'est la
+    # que se materialise l'economie du prix de gros obtenu en groupant.
+    solo_unit_price_cny: Optional[float] = None
     unit_weight_kg: float  # Poids unitaire en kg
     unit_volume_cbm: Optional[float] = None  # Volume unitaire en m3 (requis si option maritime au CBM)
     
@@ -517,8 +521,10 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
     """
     Compare prix SEUL vs GROUPAGE vs Grossiste local
     """
+    # La colonne "seul" utilise le prix unitaire au detail (petite quantite) ;
+    # a defaut (anciens groupages), on retombe sur le prix de gros.
     solo = calculate_solo_price(
-        groupage["unit_price_cny"],
+        groupage.get("solo_unit_price_cny") or groupage["unit_price_cny"],
         quantity,
         get_per_item_transport_fcfa(groupage)
     )
@@ -2186,6 +2192,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "shipment_timeline": [],
         # Pricing
         "unit_price_cny": groupage_data.unit_price_cny,
+        "solo_unit_price_cny": groupage_data.solo_unit_price_cny,
         "unit_weight_kg": groupage_data.unit_weight_kg,
         "unit_volume_cbm": groupage_data.unit_volume_cbm,
         "total_quantity": groupage_data.total_quantity,
@@ -2226,8 +2233,8 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
     data = await request.json()
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
                       "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
-                      "unit_price_cny", "unit_weight_kg", "unit_volume_cbm", "total_quantity",
-                      "total_order_price_cny", "min_members", "max_members",
+                      "unit_price_cny", "solo_unit_price_cny", "unit_weight_kg", "unit_volume_cbm",
+                      "total_quantity", "total_order_price_cny", "min_members", "max_members",
                       "deadline", "estimated_arrival", "local_price_fcfa"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
 

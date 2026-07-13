@@ -484,6 +484,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     transitaire_id: '',
     shipping_option_id: '',
     unit_price_cny: 100,
+    solo_unit_price_cny: '',
     unit_weight_kg: 0.5,
     unit_volume_cbm: '',
     total_quantity: 100,
@@ -641,6 +642,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         transitaire_id: formData.transitaire_id,
         shipping_option_id: formData.shipping_option_id || null,
         unit_price_cny: parseFloat(formData.unit_price_cny),
+        solo_unit_price_cny: parseFloat(formData.solo_unit_price_cny) || null,
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
         unit_volume_cbm: parseFloat(formData.unit_volume_cbm) || null,
         total_quantity: parseInt(formData.total_quantity),
@@ -925,19 +927,45 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             />
           </div>
 
-          <div className={isCbm ? 'grid md:grid-cols-4 gap-4' : 'grid md:grid-cols-3 gap-4'}>
+          {/* Les deux paliers de prix fournisseur : le prix de gros (quantite
+              cible) sert au calcul du groupage, le prix au detail alimente la
+              colonne "commande SEUL" du comparateur. */}
+          <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
-                {i18n.language === 'fr' ? 'Prix unitaire (CNY)' : 'Unit price (CNY)'}
+                {i18n.language === 'fr' ? 'Prix unitaire GROS (CNY, palier quantité cible)' : 'WHOLESALE unit price (CNY, target-qty tier)'}
               </label>
               <input
                 type="number"
+                step="0.01"
                 value={formData.unit_price_cny}
                 onChange={(e) => { setFormData({...formData, unit_price_cny: e.target.value}); setEstimate(null); }}
                 className="input-dark w-full px-4 py-2 rounded-md"
                 required
               />
             </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {i18n.language === 'fr' ? 'Prix unitaire SEUL (CNY, petite quantité)' : 'SOLO unit price (CNY, small-qty tier)'}
+              </label>
+              <input
+                type="number"
+                step="0.01"
+                value={formData.solo_unit_price_cny}
+                onChange={(e) => setFormData({...formData, solo_unit_price_cny: e.target.value})}
+                placeholder={i18n.language === 'fr' ? 'Palier 1 pièce sur Alibaba' : '1-piece tier on Alibaba'}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                data-testid="solo-unit-price-input"
+              />
+              <p className="text-[10px] text-[#71717A] mt-1">
+                {i18n.language === 'fr'
+                  ? "C'est lui qui matérialise l'économie du prix de gros dans le comparateur."
+                  : 'This is what materializes the bulk-price savings in the comparator.'}
+              </p>
+            </div>
+          </div>
+
+          <div className={isCbm ? 'grid md:grid-cols-3 gap-4' : 'grid md:grid-cols-2 gap-4'}>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
                 {i18n.language === 'fr' ? 'Poids unitaire (kg)' : 'Unit weight (kg)'}
@@ -2236,6 +2264,7 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
     transitaire_id: groupage.transitaire_id || '',
     shipping_option_id: groupage.shipping_option_id || '',
     unit_price_cny: groupage.unit_price_cny ?? '',
+    solo_unit_price_cny: groupage.solo_unit_price_cny ?? '',
     unit_weight_kg: groupage.unit_weight_kg ?? '',
     unit_volume_cbm: groupage.unit_volume_cbm ?? '',
     total_quantity: groupage.total_quantity ?? '',
@@ -2295,6 +2324,7 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
       transitaire_id: form.transitaire_id,
       shipping_option_id: form.shipping_option_id || null,
       unit_price_cny: parseFloat(form.unit_price_cny),
+      solo_unit_price_cny: parseFloat(form.solo_unit_price_cny) || null,
       unit_weight_kg: parseFloat(form.unit_weight_kg),
       unit_volume_cbm: parseFloat(form.unit_volume_cbm) || null,
       total_quantity: parseInt(form.total_quantity),
@@ -2392,13 +2422,24 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
             </p>
           )}
 
-          <div className={isCbm ? 'grid grid-cols-2 md:grid-cols-4 gap-4' : 'grid grid-cols-2 md:grid-cols-3 gap-4'}>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix unitaire (CNY)' : 'Unit price (CNY)'}</label>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix unit. GROS (CNY)' : 'WHOLESALE unit price (CNY)'}</label>
               <input type="number" step="0.01" value={form.unit_price_cny}
                 onChange={(e) => set({ unit_price_cny: e.target.value })}
                 className="input-dark w-full px-4 py-2 rounded-md" required />
             </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix unit. SEUL (CNY)' : 'SOLO unit price (CNY)'}</label>
+              <input type="number" step="0.01" value={form.solo_unit_price_cny}
+                onChange={(e) => set({ solo_unit_price_cny: e.target.value })}
+                placeholder={fr ? 'Palier petite quantité' : 'Small-qty tier'}
+                className="input-dark w-full px-4 py-2 rounded-md"
+                data-testid="edit-solo-unit-price" />
+            </div>
+          </div>
+
+          <div className={isCbm ? 'grid grid-cols-2 md:grid-cols-3 gap-4' : 'grid grid-cols-2 gap-4'}>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Poids unit. (kg)' : 'Unit weight (kg)'}</label>
               <input type="number" step="0.01" value={form.unit_weight_kg}
