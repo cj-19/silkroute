@@ -489,6 +489,8 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     unit_volume_cbm: '',
     total_quantity: 100,
     total_order_price_cny: 10000,
+    internal_cost_cny: '',
+    margin_percent: '',
     min_members: 5,
     max_members: 20,
     deadline: '',
@@ -527,8 +529,8 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
   const [estimating, setEstimating] = useState(false);
   const [estimate, setEstimate] = useState(null);
 
-  // Calcule le prix total de la commande selon la formule du transitaire :
-  // marchandise + (poids ou volume unitaire x quantite cible x tarif de l'option)
+  // Calcule le prix total selon la formule du transitaire (= cout reel), puis
+  // applique la marge SilkRoute pour obtenir le prix facture aux membres.
   const handleEstimate = async () => {
     setEstimating(true);
     try {
@@ -538,10 +540,15 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         unit_price_cny: parseFloat(formData.unit_price_cny),
         unit_weight_kg: parseFloat(formData.unit_weight_kg) || null,
         unit_volume_cbm: parseFloat(formData.unit_volume_cbm) || null,
-        total_quantity: parseInt(formData.total_quantity)
+        total_quantity: parseInt(formData.total_quantity),
+        margin_percent: parseFloat(formData.margin_percent) || 0
       });
       setEstimate(response.data);
-      setFormData(prev => ({ ...prev, total_order_price_cny: response.data.total_order_price_cny }));
+      setFormData(prev => ({
+        ...prev,
+        total_order_price_cny: response.data.billed_total_order_price_cny,
+        internal_cost_cny: response.data.internal_cost_cny
+      }));
       toast.success(i18n.language === 'fr' ? 'Prix total calculé!' : 'Total price computed!');
     } catch (error) {
       toast.error(error.response?.data?.detail || (i18n.language === 'fr' ? 'Erreur de calcul' : 'Estimation error'));
@@ -647,6 +654,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         unit_volume_cbm: parseFloat(formData.unit_volume_cbm) || null,
         total_quantity: parseInt(formData.total_quantity),
         total_order_price_cny: parseFloat(formData.total_order_price_cny),
+        internal_cost_cny: parseFloat(formData.internal_cost_cny) || null,
         min_members: parseInt(formData.min_members),
         max_members: parseInt(formData.max_members),
         deadline: new Date(formData.deadline).toISOString(),
@@ -1009,28 +1017,42 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             </div>
           </div>
 
-          {/* Prix total commande : calculable selon la formule du transitaire */}
+          {/* Prix total commande : cout reel selon la formule du transitaire,
+              majore de la marge SilkRoute (spread invisible pour les membres) */}
           <div>
             <label className="block text-sm text-[#A1A1AA] mb-2">
-              {i18n.language === 'fr' ? 'Prix total commande (CNY)' : 'Total order price (CNY)'}
+              {i18n.language === 'fr' ? 'Prix total facturé (CNY)' : 'Billed total price (CNY)'}
             </label>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 type="number"
                 step="0.01"
                 value={formData.total_order_price_cny}
                 onChange={(e) => setFormData({...formData, total_order_price_cny: e.target.value})}
-                className="input-dark flex-1 px-4 py-2 rounded-md"
+                className="input-dark flex-1 min-w-[140px] px-4 py-2 rounded-md"
                 required
               />
+              <div className="relative w-28">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  value={formData.margin_percent}
+                  onChange={(e) => { setFormData({...formData, margin_percent: e.target.value}); setEstimate(null); }}
+                  placeholder={i18n.language === 'fr' ? 'Marge' : 'Margin'}
+                  className="input-dark w-full pl-3 pr-8 py-2 rounded-md"
+                  data-testid="margin-input"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#71717A] text-sm">%</span>
+              </div>
               <button
                 type="button"
                 onClick={handleEstimate}
                 disabled={estimating || !formData.transitaire_id || (activeOptions.length > 0 && !formData.shipping_option_id)}
                 className="btn-outline px-3 py-2 rounded-md text-sm whitespace-nowrap flex items-center gap-1 disabled:opacity-50"
                 title={i18n.language === 'fr'
-                  ? 'Marchandise + transport selon le tarif du transitaire (mesure unitaire × quantité cible)'
-                  : 'Goods + transport per forwarder tariff (unit measure × target quantity)'}
+                  ? 'Coût réel (marchandise + transport au tarif transitaire) majoré de la marge'
+                  : 'Real cost (goods + transport at forwarder tariff) plus margin'}
                 data-testid="estimate-btn"
               >
                 {estimating ? <Loader2 className="w-4 h-4 animate-spin" /> : '🧮'}
@@ -1039,10 +1061,15 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             </div>
             {estimate && (
               <p className="text-xs text-[#71717A] mt-2" data-testid="estimate-breakdown">
-                {i18n.language === 'fr' ? 'Marchandise' : 'Goods'}: {new Intl.NumberFormat('fr-FR').format(estimate.merchandise_fcfa)} FCFA
-                {' + '}{i18n.language === 'fr' ? 'Transport' : 'Shipping'} ({estimate.unit_measure} {estimate.transport_unit === 'cbm' ? 'CBM' : 'kg'} × {estimate.total_quantity}) : {new Intl.NumberFormat('fr-FR').format(estimate.transport_total_fcfa)} FCFA
-                {' = '}<span className="text-[#D4AF37]">{new Intl.NumberFormat('fr-FR').format(estimate.total_order_price_fcfa)} FCFA</span>
-                {' '}({estimate.total_order_price_cny} CNY)
+                {i18n.language === 'fr' ? 'Coût réel' : 'Real cost'}: {new Intl.NumberFormat('fr-FR').format(estimate.total_order_price_fcfa)} FCFA
+                {' ('}{i18n.language === 'fr' ? 'marchandise' : 'goods'} {new Intl.NumberFormat('fr-FR').format(estimate.merchandise_fcfa)}
+                {' + transport '}{new Intl.NumberFormat('fr-FR').format(estimate.transport_total_fcfa)}{')'}
+                {estimate.margin_percent > 0 && (
+                  <>
+                    {' → '}{i18n.language === 'fr' ? 'facturé' : 'billed'}: <span className="text-[#D4AF37]">{new Intl.NumberFormat('fr-FR').format(estimate.billed_total_order_price_fcfa)} FCFA</span>
+                    {' '}(<span className="text-[#22C55E]">+{new Intl.NumberFormat('fr-FR').format(estimate.margin_fcfa)} FCFA {i18n.language === 'fr' ? 'de marge' : 'margin'}</span>)
+                  </>
+                )}
               </p>
             )}
           </div>
@@ -2269,6 +2296,8 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
     unit_volume_cbm: groupage.unit_volume_cbm ?? '',
     total_quantity: groupage.total_quantity ?? '',
     total_order_price_cny: groupage.total_order_price_cny ?? '',
+    internal_cost_cny: '',
+    margin_percent: '',
     min_members: groupage.min_members ?? '',
     max_members: groupage.max_members ?? '',
     deadline: toLocalInput(groupage.deadline),
@@ -2298,10 +2327,15 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
         unit_price_cny: parseFloat(form.unit_price_cny),
         unit_weight_kg: parseFloat(form.unit_weight_kg) || null,
         unit_volume_cbm: parseFloat(form.unit_volume_cbm) || null,
-        total_quantity: parseInt(form.total_quantity)
+        total_quantity: parseInt(form.total_quantity),
+        margin_percent: parseFloat(form.margin_percent) || 0
       });
       setEstimate(response.data);
-      setForm(prev => ({ ...prev, total_order_price_cny: response.data.total_order_price_cny }));
+      setForm(prev => ({
+        ...prev,
+        total_order_price_cny: response.data.billed_total_order_price_cny,
+        internal_cost_cny: response.data.internal_cost_cny
+      }));
       toast.success(fr ? 'Prix total recalculé!' : 'Total price recomputed!');
     } catch (error) {
       toast.error(error.response?.data?.detail || (fr ? 'Erreur de calcul' : 'Estimation error'));
@@ -2330,6 +2364,7 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
       total_quantity: parseInt(form.total_quantity),
       total_order_price_cny: parseFloat(form.total_order_price_cny),
       min_members: parseInt(form.min_members),
+      ...(form.internal_cost_cny ? { internal_cost_cny: parseFloat(form.internal_cost_cny) } : {}),
       max_members: parseInt(form.max_members),
       local_price_fcfa: parseFloat(form.local_price_fcfa) || 0,
       suggested_resale_price_fcfa: form.suggested_resale_price_fcfa === '' ? null : parseFloat(form.suggested_resale_price_fcfa)
@@ -2468,11 +2503,24 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
           </div>
 
           <div>
-            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix total commande (CNY)' : 'Total order price (CNY)'}</label>
-            <div className="flex gap-2">
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix total facturé (CNY)' : 'Billed total price (CNY)'}</label>
+            <div className="flex flex-wrap gap-2">
               <input type="number" step="0.01" value={form.total_order_price_cny}
                 onChange={(e) => setForm(prev => ({ ...prev, total_order_price_cny: e.target.value }))}
-                className="input-dark flex-1 px-4 py-2 rounded-md" required />
+                className="input-dark flex-1 min-w-[140px] px-4 py-2 rounded-md" required />
+              <div className="relative w-28">
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  value={form.margin_percent}
+                  onChange={(e) => set({ margin_percent: e.target.value })}
+                  placeholder={fr ? 'Marge' : 'Margin'}
+                  className="input-dark w-full pl-3 pr-8 py-2 rounded-md"
+                  data-testid="edit-margin-input"
+                />
+                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#71717A] text-sm">%</span>
+              </div>
               <button
                 type="button"
                 onClick={handleEstimate}
@@ -2486,9 +2534,15 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
             </div>
             {estimate && (
               <p className="text-xs text-[#71717A] mt-2">
-                {fr ? 'Marchandise' : 'Goods'}: {num(estimate.merchandise_fcfa)} FCFA
-                {' + '}{fr ? 'Transport' : 'Shipping'} ({estimate.unit_measure} {estimate.transport_unit === 'cbm' ? 'CBM' : 'kg'} × {estimate.total_quantity}) : {num(estimate.transport_total_fcfa)} FCFA
-                {' = '}<span className="text-[#D4AF37]">{num(estimate.total_order_price_fcfa)} FCFA</span>
+                {fr ? 'Coût réel' : 'Real cost'}: {num(estimate.total_order_price_fcfa)} FCFA
+                {' ('}{fr ? 'marchandise' : 'goods'} {num(estimate.merchandise_fcfa)}
+                {' + transport '}{num(estimate.transport_total_fcfa)}{')'}
+                {estimate.margin_percent > 0 && (
+                  <>
+                    {' → '}{fr ? 'facturé' : 'billed'}: <span className="text-[#D4AF37]">{num(estimate.billed_total_order_price_fcfa)} FCFA</span>
+                    {' '}(<span className="text-[#22C55E]">+{num(estimate.margin_fcfa)} FCFA {fr ? 'de marge' : 'margin'}</span>)
+                  </>
+                )}
               </p>
             )}
           </div>

@@ -58,7 +58,14 @@ JWT_EXPIRATION_HOURS = 24 * 7
 # Constants
 USD_TO_FCFA = 615  # Taux de conversion USD -> FCFA
 CNY_TO_FCFA = 85   # Taux de conversion CNY -> FCFA
-SILKROUTE_FEE_FCFA = 5000  # Frais SilkRoute fixes
+# Frais de service SilkRoute : pourcentage de la part membre, avec un plancher
+# pour les petites commandes. Jamais exposes tels quels dans l'API (fondus dans
+# le total). Ajustables via variables d'environnement sans redeployer.
+SERVICE_FEE_PERCENT = float(os.environ.get("SERVICE_FEE_PERCENT", 5))
+SERVICE_FEE_MIN_FCFA = float(os.environ.get("SERVICE_FEE_MIN_FCFA", 2000))
+
+def service_fee_fcfa(member_share_fcfa: float) -> float:
+    return max(SERVICE_FEE_MIN_FCFA, member_share_fcfa * SERVICE_FEE_PERCENT / 100)
 MIN_GROUPAGE_TOTAL_FCFA = 25000  # Total minimum (frais de service inclus) pour pouvoir rejoindre un groupage
 # Frais fixes estimes pour une commande en solo (dedouanement, agent, minimum
 # transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
@@ -291,7 +298,11 @@ class GroupageCreate(BaseModel):
     
     # Commande totale
     total_quantity: int  # Quantité totale de la commande groupée
-    total_order_price_cny: float  # Prix tout compris de la commande totale
+    total_order_price_cny: float  # Prix tout compris FACTURE aux membres (marge incluse)
+    # Cout reel tout compris apres remises negociees aupres du fournisseur et du
+    # transitaire. STRICTEMENT INTERNE (jamais expose par l'API publique) : la
+    # difference avec total_order_price_cny constitue la marge SilkRoute.
+    internal_cost_cny: Optional[float] = None
     
     # Membres
     min_members: int
@@ -499,13 +510,18 @@ def calculate_groupage_price(total_order_price_cny: float, total_quantity: int, 
     # volontairement PAS exposes comme ligne separee dans la reponse : ils sont
     # fondus dans le total pour ne pas divulguer notre structure de prix.
     member_share_fcfa = (share_percentage / 100) * total_order_price_fcfa
-    total_groupage = member_share_fcfa + SILKROUTE_FEE_FCFA
+    total_groupage = member_share_fcfa + service_fee_fcfa(member_share_fcfa)
     price_per_unit_groupage = total_groupage / member_quantity if member_quantity > 0 else 0
 
     meets_minimum = total_groupage >= MIN_GROUPAGE_TOTAL_FCFA
     min_quantity_needed = None
     if not meets_minimum and price_per_unit_excl_fee > 0:
-        min_quantity_needed = math.ceil((MIN_GROUPAGE_TOTAL_FCFA - SILKROUTE_FEE_FCFA) / price_per_unit_excl_fee)
+        # Part minimale pour que part + frais >= minimum, selon que le plancher
+        # ou le pourcentage s'applique au point de bascule.
+        share_needed = MIN_GROUPAGE_TOTAL_FCFA / (1 + SERVICE_FEE_PERCENT / 100)
+        if share_needed * SERVICE_FEE_PERCENT / 100 < SERVICE_FEE_MIN_FCFA:
+            share_needed = MIN_GROUPAGE_TOTAL_FCFA - SERVICE_FEE_MIN_FCFA
+        min_quantity_needed = math.ceil(share_needed / price_per_unit_excl_fee)
 
     return {
         "share_percentage": round(share_percentage, 2),
@@ -1195,8 +1211,12 @@ def _partner_groupage_query(user: dict) -> dict:
 
 @api_router.get("/partner/groupages")
 async def partner_groupages(user: dict = Depends(require_partner)):
-    """Groupages assignes au partenaire connecte (par sa fiche transitaire/fournisseur)."""
-    groupages = await db.groupages.find(_partner_groupage_query(user), {"_id": 0}).sort("created_at", -1).to_list(200)
+    """Groupages assignes au partenaire connecte (par sa fiche transitaire/fournisseur).
+    Le cout interne et la marge SilkRoute ne sont jamais visibles des partenaires."""
+    groupages = await db.groupages.find(
+        _partner_groupage_query(user),
+        {"_id": 0, "internal_cost_cny": 0, "supplier_documents": 0}
+    ).sort("created_at", -1).to_list(200)
     return groupages
 
 @api_router.put("/partner/groupages/{groupage_id}/phase")
@@ -1570,8 +1590,8 @@ async def get_cloudinary_signature(folder: str = "uploads", user: dict = Depends
 
 # Champs sensibles jamais exposes dans les reponses publiques de groupage :
 # les documents fournisseur revelent l'identite legale du fournisseur (risque de
-# contournement de la plateforme et fuite d'insights vers les concurrents).
-PUBLIC_GROUPAGE_PROJECTION = {"_id": 0, "supplier_documents": 0, "supplier_extra_documents": 0}
+# contournement) et internal_cost_cny revele la marge SilkRoute.
+PUBLIC_GROUPAGE_PROJECTION = {"_id": 0, "supplier_documents": 0, "supplier_extra_documents": 0, "internal_cost_cny": 0}
 
 @api_router.get("/groupages")
 async def list_groupages(status: Optional[str] = None, category_id: Optional[str] = None, featured: bool = False, limit: int = 20):
@@ -1997,11 +2017,21 @@ async def estimate_groupage_pricing(request: Request, admin: dict = Depends(requ
     if unit_price_cny <= 0 or total_quantity <= 0:
         raise HTTPException(status_code=400, detail="unit_price_cny et total_quantity doivent etre positifs")
 
-    return estimate_order_totals(
+    result = estimate_order_totals(
         unit_price_cny, total_quantity,
         transport["fields"]["transport_unit"], transport["fields"]["transport_price_fcfa"],
         unit_weight_kg, unit_volume_cbm
     )
+
+    # Marge SilkRoute (spread) : le total calcule ci-dessus est considere comme le
+    # COUT REEL negocie ; le prix facture aux membres = cout x (1 + marge%).
+    margin_percent = float(data.get("margin_percent") or 0)
+    result["internal_cost_cny"] = result["total_order_price_cny"]
+    result["margin_percent"] = margin_percent
+    result["billed_total_order_price_cny"] = round(result["total_order_price_cny"] * (1 + margin_percent / 100), 2)
+    result["billed_total_order_price_fcfa"] = round(result["billed_total_order_price_cny"] * CNY_TO_FCFA, 0)
+    result["margin_fcfa"] = round(result["billed_total_order_price_fcfa"] - result["total_order_price_fcfa"], 0)
+    return result
 
 @api_router.get("/admin/stats")
 async def get_admin_stats(user: dict = Depends(require_admin)):
@@ -2197,6 +2227,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "unit_volume_cbm": groupage_data.unit_volume_cbm,
         "total_quantity": groupage_data.total_quantity,
         "total_order_price_cny": groupage_data.total_order_price_cny,
+        "internal_cost_cny": groupage_data.internal_cost_cny,
         "min_members": groupage_data.min_members,
         "max_members": groupage_data.max_members,
         "current_members": 0,
@@ -2234,7 +2265,8 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
                       "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
                       "unit_price_cny", "solo_unit_price_cny", "unit_weight_kg", "unit_volume_cbm",
-                      "total_quantity", "total_order_price_cny", "min_members", "max_members",
+                      "total_quantity", "total_order_price_cny", "internal_cost_cny",
+                      "min_members", "max_members",
                       "deadline", "estimated_arrival", "local_price_fcfa"]
     update_data = {k: v for k, v in data.items() if k in allowed_fields}
 
