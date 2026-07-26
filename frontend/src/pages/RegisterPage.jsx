@@ -3,10 +3,17 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import { Mail, Lock, Eye, EyeOff, User, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const RegisterPage = () => {
+  useSeo({
+    title: 'Créer un compte gratuit | SilkRoute',
+    description: "Créez votre compte SilkRoute gratuitement et rejoignez des commandes groupées Chine-Afrique au prix de gros.",
+    path: '/register'
+  });
+
   const { t, i18n } = useTranslation();
   const { register } = useAuth();
   const navigate = useNavigate();

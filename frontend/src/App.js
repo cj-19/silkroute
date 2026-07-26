@@ -22,6 +22,8 @@ import ResetPasswordPage from "@/pages/ResetPasswordPage";
 import VerifyEmailPage from "@/pages/VerifyEmailPage";
 import SettingsPage from "@/pages/SettingsPage";
 import FAQPage from "@/pages/FAQPage";
+import { TermsPage, PrivacyPage, ContactPage } from "@/pages/LegalPages";
+import NotFoundPage from "@/pages/NotFoundPage";
 
 // Protected Route Component
 const ProtectedRoute = ({ children, adminOnly = false, roles = null }) => {
@@ -106,7 +108,14 @@ const AppRouter = () => {
         </ProtectedRoute>
       } />
       
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="/terms" element={<TermsPage />} />
+      <Route path="/privacy" element={<PrivacyPage />} />
+      <Route path="/contact" element={<ContactPage />} />
+
+      {/* Une URL inconnue affiche une vraie page 404 (en noindex) au lieu de
+          rediriger silencieusement vers l'accueil, ce que Google traite en
+          "soft 404" et qui masque les liens casses. */}
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
 };

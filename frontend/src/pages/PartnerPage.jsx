@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import {
   Package, Truck, FileText, Upload, Loader2, CheckCircle,
   MessageSquare, Star, Send, ChevronDown, ChevronUp
@@ -37,6 +38,8 @@ export const phaseLabel = (phase, lang) => (PHASE_LABELS[lang === 'fr' ? 'fr' : 
 // Portail partenaire : le transitaire met a jour les phases et pousse les documents
 // logistiques ; le fournisseur pousse ses documents et repond aux avis post-livraison.
 const PartnerPage = () => {
+  useSeo({ title: 'Espace partenaire | SilkRoute', path: '/partenaire', noindex: true });
+
   const { i18n } = useTranslation();
   const { user } = useAuth();
   const [groupages, setGroupages] = useState([]);

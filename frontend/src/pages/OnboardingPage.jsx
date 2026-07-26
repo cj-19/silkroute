@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import { 
   User, MapPin, Phone, CreditCard, Camera, FileText, 
   Check, ChevronRight, ChevronLeft, Upload, Loader2, AlertCircle
@@ -12,6 +13,8 @@ import axios from 'axios';
 import { api } from '@/lib/api';
 
 const OnboardingPage = () => {
+  useSeo({ title: 'Bienvenue | SilkRoute', path: '/onboarding', noindex: true });
+
   const { t, i18n } = useTranslation();
   const { user, updateUser } = useAuth();
   const navigate = useNavigate();

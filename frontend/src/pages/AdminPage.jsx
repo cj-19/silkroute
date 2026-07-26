@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
@@ -13,6 +14,8 @@ import { api } from '@/lib/api';
 import ImageDropZone from '@/components/ImageDropZone';
 
 const AdminPage = () => {
+  useSeo({ title: 'Administration | SilkRoute', path: '/admin', noindex: true });
+
   const location = useLocation();
   const { t, i18n } = useTranslation();
 

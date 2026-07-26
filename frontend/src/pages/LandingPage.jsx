@@ -17,14 +17,41 @@ import {
   Loader2
 } from 'lucide-react';
 import axios from 'axios';
+import { useSeo, useJsonLd } from '@/hooks/useSeo';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
+
+// Donnees structurees decrivant l'entreprise (constante : identite stable entre rendus)
+const ORGANIZATION_JSONLD = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: 'SilkRoute',
+  url: 'https://www.silkroute.africa',
+  description: "Plateforme d'achats groupés permettant aux commerçants africains d'importer depuis la Chine au prix de gros.",
+  areaServed: { '@type': 'Country', name: 'Cameroun' },
+  knowsLanguage: ['fr', 'en']
+};
 
 const LandingPage = () => {
   const { t, i18n } = useTranslation();
   const [groupages, setGroupages] = useState([]);
   const [loading, setLoading] = useState(true);
+  const fr = i18n.language === 'fr';
+
+  useSeo({
+    title: fr
+      ? 'SilkRoute — Achats groupés Chine-Afrique, importez au prix de gros'
+      : 'SilkRoute — China-Africa group buying at wholesale prices',
+    description: fr
+      ? "Importez depuis la Chine sans voyager : achats groupés entre commerçants, fournisseurs vérifiés, transitaires licenciés, retrait à Douala et Yaoundé."
+      : 'Import from China without traveling: group buying, verified suppliers, licensed forwarders, pickup in your city.',
+    path: '/',
+    lang: fr ? 'fr' : 'en'
+  });
+
+  // Identite de l'organisation pour Google et les assistants IA
+  useJsonLd(ORGANIZATION_JSONLD, 'org-jsonld');
 
   useEffect(() => {
     const fetchGroupages = async () => {

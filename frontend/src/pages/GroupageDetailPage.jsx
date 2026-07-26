@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import { io } from 'socket.io-client';
 import { api } from '@/lib/api';
 import { phaseLabel } from '@/pages/PartnerPage';
+import { useSeo } from '@/hooks/useSeo';
 
 const SHIPMENT_PHASES = ['preparation', 'picked_up', 'in_transit', 'customs', 'arrived', 'delivered'];
 
@@ -32,6 +33,21 @@ const GroupageDetailPage = () => {
   const [documents, setDocuments] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('comparator');
+
+  // Titre et description construits a partir du produit : chaque groupage devient
+  // une page indexable distincte (recherches produit + "acheter X en gros Chine")
+  const seoTitle = groupage
+    ? `${i18n.language === 'en' ? (groupage.title_en || groupage.title) : groupage.title} — commande groupée depuis la Chine | SilkRoute`
+    : 'Groupage | SilkRoute';
+  const seoDesc = groupage
+    ? `${(i18n.language === 'en' ? (groupage.description_en || groupage.description) : groupage.description || '').slice(0, 120)} — Prix de gros, transitaire ${groupage.transitaire_name || 'licencié'}, retrait ${(groupage.pickup_cities || []).join(', ') || 'dans votre ville'}.`
+    : undefined;
+  useSeo({
+    title: seoTitle,
+    description: seoDesc,
+    path: `/groupages/${id}`,
+    lang: i18n.language === 'fr' ? 'fr' : 'en'
+  });
   const [newMessage, setNewMessage] = useState('');
   const [joining, setJoining] = useState(false);
   const [quantity, setQuantity] = useState(1);

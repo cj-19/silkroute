@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { ChevronDown, ChevronUp, HelpCircle } from 'lucide-react';
+import { useSeo, useJsonLd } from '@/hooks/useSeo';
 
 // FAQ pensee pour le referencement (moteurs de recherche ET assistants IA) :
 // les questions reprennent les requetes reelles des acheteurs africains qui
@@ -88,9 +89,20 @@ const FAQPage = () => {
   const fr = i18n.language === 'fr';
   const [openIdx, setOpenIdx] = useState(0);
 
+  useSeo({
+    title: fr
+      ? 'Importer de Chine vers l\'Afrique : questions fréquentes | SilkRoute'
+      : 'Importing from China to Africa: FAQ | SilkRoute',
+    description: fr
+      ? "Prix du fret Chine-Cameroun au kg ou au CBM, délais, éviter les arnaques Alibaba, payer un fournisseur chinois depuis l'Afrique : nos réponses."
+      : 'China-Cameroon freight prices per kg or CBM, lead times, avoiding Alibaba scams, paying Chinese suppliers from Africa: our answers.',
+    path: '/faq',
+    lang: fr ? 'fr' : 'en'
+  });
+
   // Donnees structurees schema.org pour les resultats enrichis Google et les
   // reponses des assistants IA. Toujours en francais (marche principal).
-  const jsonLd = {
+  const jsonLd = useMemo(() => ({
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
     mainEntity: FAQ_ITEMS.map(item => ({
@@ -98,14 +110,11 @@ const FAQPage = () => {
       name: item.q,
       acceptedAnswer: { '@type': 'Answer', text: item.a }
     }))
-  };
+  }), []);
+  useJsonLd(jsonLd, 'faq-jsonld');
 
   return (
     <Layout>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
-      />
       <div className="min-h-screen bg-[#0A0A0A] pt-8 pb-16" data-testid="faq-page">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-10">
@@ -137,11 +146,17 @@ const FAQPage = () => {
                     ? <ChevronUp className="w-5 h-5 text-[#D4AF37] shrink-0" />
                     : <ChevronDown className="w-5 h-5 text-[#71717A] shrink-0" />}
                 </button>
-                {openIdx === idx && (
-                  <div className="px-5 pb-5 text-[#A1A1AA] text-sm leading-relaxed border-t border-[#2A2A2A] pt-4">
-                    {fr ? item.a : item.a_en}
-                  </div>
-                )}
+                {/* La reponse est TOUJOURS presente dans le DOM (repliee via CSS
+                    et non par rendu conditionnel) : sinon les moteurs de recherche
+                    ne voient que la reponse ouverte et ignorent les 11 autres. */}
+                <div
+                  className={`px-5 text-[#A1A1AA] text-sm leading-relaxed border-t border-[#2A2A2A] ${
+                    openIdx === idx ? 'pb-5 pt-4' : 'sr-only'
+                  }`}
+                  aria-hidden={openIdx !== idx}
+                >
+                  {fr ? item.a : item.a_en}
+                </div>
               </div>
             ))}
           </div>

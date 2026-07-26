@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import { toast } from 'sonner';
 import {
   Package, FileText, Clock, CheckCircle, AlertCircle,
@@ -11,6 +12,8 @@ import {
 import { api } from '@/lib/api';
 
 const DashboardPage = () => {
+  useSeo({ title: 'Tableau de bord | SilkRoute', path: '/dashboard', noindex: true });
+
   const { t, i18n } = useTranslation();
   const { user } = useAuth();
   const [groupages, setGroupages] = useState([]);

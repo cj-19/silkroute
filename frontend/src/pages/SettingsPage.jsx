@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import {
   User, Phone, MapPin, Globe, Wallet, Lock, Loader2,
   MailCheck, MailWarning, Send, Eye, EyeOff, ShieldCheck
@@ -12,6 +13,8 @@ import { api } from '@/lib/api';
 // Page "Mon compte" : modifier ses informations, verifier son email,
 // changer son mot de passe.
 const SettingsPage = () => {
+  useSeo({ title: 'Mon compte | SilkRoute', path: '/settings', noindex: true });
+
   const { t, i18n } = useTranslation();
   const fr = i18n.language === 'fr';
   const { user, updateUser } = useAuth();

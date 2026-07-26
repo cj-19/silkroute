@@ -3,10 +3,17 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import { useSeo } from '@/hooks/useSeo';
 import { Mail, Lock, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const LoginPage = () => {
+  useSeo({
+    title: 'Connexion à votre compte | SilkRoute',
+    description: "Connectez-vous à votre compte SilkRoute pour suivre vos commandes groupées depuis la Chine.",
+    path: '/login'
+  });
+
   const { t } = useTranslation();
   const { login } = useAuth();
   const navigate = useNavigate();

@@ -5,6 +5,7 @@ import { Layout } from '@/components/Layout';
 import { motion } from 'framer-motion';
 import { Package, Clock, Users, Search, Filter } from 'lucide-react';
 import axios from 'axios';
+import { useSeo } from '@/hooks/useSeo';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -13,6 +14,17 @@ const GroupagesPage = () => {
   const { t, i18n } = useTranslation();
   const [groupages, setGroupages] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  useSeo({
+    title: i18n.language === 'fr'
+      ? 'Groupages ouverts : commandes groupées Chine-Afrique | SilkRoute'
+      : 'Open group orders: China-Africa group buying | SilkRoute',
+    description: i18n.language === 'fr'
+      ? "Rejoignez une commande groupée en cours : électronique, textiles, beauté, ménager. Prix de gros, transitaire licencié, retrait dans votre ville."
+      : 'Join an ongoing group order: electronics, textiles, beauty, household. Wholesale prices, licensed forwarder, pickup in your city.',
+    path: '/groupages',
+    lang: i18n.language === 'fr' ? 'fr' : 'en'
+  });
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
 
