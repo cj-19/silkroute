@@ -87,11 +87,12 @@ export const Navbar = () => {
 
           {/* Right Side */}
           <div className="flex items-center gap-4">
-            {/* Theme Toggle */}
+            {/* Theme Toggle — min 44px de cote pour respecter les zones tactiles mobiles */}
             <button
               onClick={toggleTheme}
-              className="p-2 rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
               title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
+              aria-label={theme === 'dark' ? 'Passer en mode clair' : 'Passer en mode sombre'}
               data-testid="theme-toggle"
             >
               {theme === 'dark'
@@ -102,7 +103,8 @@ export const Navbar = () => {
             {/* Language Toggle */}
             <button
               onClick={toggleLanguage}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
+              className="flex items-center justify-center gap-2 px-3 min-h-[44px] rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
+              aria-label={currentLang === 'fr' ? 'Switch to English' : 'Passer en français'}
               data-testid="language-toggle"
             >
               <Globe className="w-4 h-4 text-[#A1A1AA]" />
@@ -261,17 +263,18 @@ export const Footer = () => {
             </span>
           </div>
           
-          <div className="flex items-center gap-6 text-sm">
-            <Link to="/faq" className="text-[#A1A1AA] hover:text-white transition-colors">
+          {/* Liens du footer : py-3 garantit une hauteur de touche >= 44px sur mobile */}
+          <div className="flex flex-wrap items-center justify-center gap-x-5 text-sm">
+            <Link to="/faq" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
               FAQ
             </Link>
-            <Link to="/terms" className="text-[#A1A1AA] hover:text-white transition-colors">
+            <Link to="/terms" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
               {t('footer.terms')}
             </Link>
-            <Link to="/privacy" className="text-[#A1A1AA] hover:text-white transition-colors">
+            <Link to="/privacy" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
               {t('footer.privacy')}
             </Link>
-            <Link to="/contact" className="text-[#A1A1AA] hover:text-white transition-colors">
+            <Link to="/contact" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
               {t('footer.contact')}
             </Link>
           </div>
