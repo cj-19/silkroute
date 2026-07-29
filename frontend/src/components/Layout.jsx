@@ -265,16 +265,16 @@ export const Footer = () => {
           
           {/* Liens du footer : py-3 garantit une hauteur de touche >= 44px sur mobile */}
           <div className="flex flex-wrap items-center justify-center gap-x-5 text-sm">
-            <Link to="/faq" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
+            <Link to="/faq" className="text-[#A1A1AA] hover:text-white transition-colors py-3 px-2 inline-flex items-center justify-center min-w-[44px]">
               FAQ
             </Link>
-            <Link to="/terms" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
+            <Link to="/terms" className="text-[#A1A1AA] hover:text-white transition-colors py-3 px-2 inline-flex items-center justify-center min-w-[44px]">
               {t('footer.terms')}
             </Link>
-            <Link to="/privacy" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
+            <Link to="/privacy" className="text-[#A1A1AA] hover:text-white transition-colors py-3 px-2 inline-flex items-center justify-center min-w-[44px]">
               {t('footer.privacy')}
             </Link>
-            <Link to="/contact" className="text-[#A1A1AA] hover:text-white transition-colors py-3 inline-flex items-center">
+            <Link to="/contact" className="text-[#A1A1AA] hover:text-white transition-colors py-3 px-2 inline-flex items-center justify-center min-w-[44px]">
               {t('footer.contact')}
             </Link>
           </div>
