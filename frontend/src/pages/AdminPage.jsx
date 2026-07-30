@@ -7,7 +7,7 @@ import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
   Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin,
-  Image as ImageIcon
+  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -28,7 +28,8 @@ const AdminPage = () => {
     { path: '/admin/users', label: i18n.language === 'fr' ? 'Utilisateurs' : 'Users', icon: Users },
     { path: '/admin/transitaires', label: i18n.language === 'fr' ? 'Transitaires' : 'Forwarders', icon: Truck },
     { path: '/admin/suppliers', label: i18n.language === 'fr' ? 'Fournisseurs' : 'Suppliers', icon: Factory },
-    { path: '/admin/accounts', label: i18n.language === 'fr' ? 'Comptes partenaires' : 'Partner accounts', icon: KeyRound }
+    { path: '/admin/accounts', label: i18n.language === 'fr' ? 'Comptes partenaires' : 'Partner accounts', icon: KeyRound },
+    { path: '/admin/content', label: i18n.language === 'fr' ? 'Contenu & SEO' : 'Content & SEO', icon: FileText }
   ];
 
   return (
@@ -69,6 +70,7 @@ const AdminPage = () => {
               <Route path="transitaires" element={<AdminTransitaires />} />
               <Route path="suppliers" element={<AdminSuppliers />} />
               <Route path="accounts" element={<AdminPartnerAccounts />} />
+              <Route path="content" element={<AdminContent />} />
             </Routes>
           </main>
         </div>
@@ -2676,6 +2678,551 @@ const EditImageModal = ({ groupage, fr, onClose, onSaved }) => {
             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
           </button>
         </div>
+      </div>
+    </div>
+  );
+};
+
+// ============ Admin Contenu & SEO ============
+//
+// Gere les questions de FAQ et les guides. Publier enregistre en base (visible
+// immediatement dans l'application) ; le bouton "Regenerer les pages" declenche
+// un build du site pour que le contenu entre aussi dans les pages statiques
+// lues par les robots qui n'executent pas JavaScript.
+
+// Transforme un titre en slug d'URL : "Fret aérien Chine-Cameroun" -> "fret-aerien-chine-cameroun"
+const slugify = (str) =>
+  (str || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+
+const AdminContent = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('guide');
+  const [editing, setEditing] = useState(null); // 'new' | entry
+  const [rebuilding, setRebuilding] = useState(false);
+  const [dirtySincePublish, setDirtySincePublish] = useState(false);
+
+  const fetchEntries = async () => {
+    try {
+      const response = await api.get('/admin/content');
+      setEntries(response.data);
+    } catch (error) {
+      toast.error(fr ? 'Erreur de chargement' : 'Loading error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEntries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleRebuild = async () => {
+    setRebuilding(true);
+    try {
+      const response = await api.post('/admin/content/rebuild');
+      toast.success(response.data.message);
+      setDirtySincePublish(false);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setRebuilding(false);
+    }
+  };
+
+  const togglePublished = async (entry) => {
+    try {
+      await api.put(`/admin/content/${entry.content_id}`, { published: !entry.published });
+      setDirtySincePublish(true);
+      fetchEntries();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    }
+  };
+
+  const handleDelete = async (entry) => {
+    try {
+      await api.delete(`/admin/content/${entry.content_id}`);
+      toast.success(fr ? 'Supprimé' : 'Deleted');
+      setDirtySincePublish(true);
+      fetchEntries();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    }
+  };
+
+  const filtered = entries.filter((e) => e.type === tab);
+  const publishedCount = entries.filter((e) => e.published).length;
+
+  if (loading) {
+    return <div className="text-center py-16"><Loader2 className="w-8 h-8 animate-spin mx-auto text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-content">
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-2">
+        <h1 className="font-['Bebas_Neue'] text-3xl">
+          {fr ? 'Contenu & SEO' : 'Content & SEO'}{' '}
+          <span className="text-[#71717A] text-xl">({publishedCount} {fr ? 'publiés' : 'published'})</span>
+        </h1>
+        <div className="flex gap-2">
+          <button
+            onClick={handleRebuild}
+            disabled={rebuilding}
+            className={`px-4 py-2 rounded-md text-sm flex items-center gap-2 disabled:opacity-50 ${dirtySincePublish ? 'btn-gold' : 'btn-outline'}`}
+            title={fr ? 'Régénère les pages statiques lues par Google et les IA' : 'Regenerate static pages'}
+            data-testid="rebuild-btn"
+          >
+            {rebuilding ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
+            {fr ? 'Régénérer les pages' : 'Regenerate pages'}
+          </button>
+          <button
+            onClick={() => setEditing('new')}
+            className="btn-gold px-4 py-2 rounded-md text-sm flex items-center gap-2"
+            data-testid="create-content-btn"
+          >
+            <Plus className="w-4 h-4" />
+            {fr ? 'Nouveau' : 'New'}
+          </button>
+        </div>
+      </div>
+
+      <p className="text-sm text-[#71717A] mb-5 max-w-2xl">
+        {fr
+          ? "Publier rend le contenu visible immédiatement sur le site. Pour qu'il entre aussi dans les pages statiques lues par Google et les assistants IA, cliquez sur « Régénérer les pages » (2 à 3 minutes)."
+          : 'Publishing makes content visible on the site right away. To also include it in the static pages read by Google and AI assistants, click "Regenerate pages".'}
+      </p>
+
+      {dirtySincePublish && (
+        <div className="bg-[#F97316]/10 border border-[#F97316]/30 rounded-lg p-3 mb-5 flex items-center gap-3">
+          <AlertTriangle className="w-4 h-4 text-[#F97316] shrink-0" />
+          <p className="text-sm text-[#F97316]">
+            {fr
+              ? 'Des changements ne sont pas encore dans les pages statiques. Cliquez sur « Régénérer les pages ».'
+              : 'Changes are not in the static pages yet. Click "Regenerate pages".'}
+          </p>
+        </div>
+      )}
+
+      {/* Onglets FAQ / Guides */}
+      <div className="flex gap-1 border-b border-[#2A2A2A] mb-5">
+        {[
+          { key: 'guide', label: fr ? 'Guides' : 'Guides', icon: FileText },
+          { key: 'faq', label: 'FAQ', icon: HelpCircle }
+        ].map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            onClick={() => setTab(key)}
+            className={`px-4 py-2.5 text-sm flex items-center gap-2 border-b-2 transition-colors ${
+              tab === key ? 'border-[#D4AF37] text-[#D4AF37]' : 'border-transparent text-[#A1A1AA] hover:text-white'
+            }`}
+            data-testid={`content-tab-${key}`}
+          >
+            <Icon className="w-4 h-4" />
+            {label}
+            <span className="text-xs text-[#71717A]">({entries.filter((e) => e.type === key).length})</span>
+          </button>
+        ))}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-10 text-center">
+          <FileText className="w-12 h-12 text-[#2A2A2A] mx-auto mb-4" />
+          <p className="text-[#A1A1AA] mb-1">
+            {tab === 'guide'
+              ? (fr ? 'Aucun guide pour le moment.' : 'No guide yet.')
+              : (fr ? 'Aucune question ajoutée.' : 'No question added.')}
+          </p>
+          <p className="text-sm text-[#71717A]">
+            {tab === 'guide'
+              ? (fr ? 'Un guide devient une page à l\'adresse /guides/votre-slug' : 'A guide becomes a page at /guides/your-slug')
+              : (fr ? 'Les questions s\'ajoutent à la fin de la page /faq' : 'Questions are appended to the /faq page')}
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {filtered.map((entry) => (
+            <div key={entry.content_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <h3 className="font-medium normal-case"
+                        style={{ fontFamily: 'DM Sans, sans-serif', textTransform: 'none', letterSpacing: 'normal' }}>
+                      {entry.type === 'faq' ? (entry.question || entry.title) : entry.title}
+                    </h3>
+                    <span className={`px-2 py-0.5 rounded text-xs ${entry.published ? 'badge-success' : 'badge-warning'}`}>
+                      {entry.published ? (fr ? 'Publié' : 'Published') : (fr ? 'Brouillon' : 'Draft')}
+                    </span>
+                    {entry.cluster && (
+                      <span className="text-xs text-[#71717A]">{entry.cluster}</span>
+                    )}
+                  </div>
+                  {entry.type === 'guide' && (
+                    <p className="text-xs text-[#71717A] font-mono">/guides/{entry.slug}</p>
+                  )}
+                  {entry.meta_description && (
+                    <p className="text-sm text-[#A1A1AA] mt-1 line-clamp-2">{entry.meta_description}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  {entry.type === 'guide' && entry.published && (
+                    <a
+                      href={`/guides/${entry.slug}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="p-2 text-[#A1A1AA] hover:text-[#D4AF37]"
+                      title={fr ? 'Voir la page' : 'View page'}
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  )}
+                  <button
+                    onClick={() => togglePublished(entry)}
+                    className="p-2 text-[#A1A1AA] hover:text-[#22C55E]"
+                    title={entry.published ? (fr ? 'Dépublier' : 'Unpublish') : (fr ? 'Publier' : 'Publish')}
+                  >
+                    {entry.published ? <X className="w-4 h-4" /> : <Check className="w-4 h-4" />}
+                  </button>
+                  <button
+                    onClick={() => setEditing(entry)}
+                    className="p-2 text-[#A1A1AA] hover:text-[#D4AF37]"
+                    title={fr ? 'Modifier' : 'Edit'}
+                    data-testid={`edit-content-${entry.content_id}`}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDelete(entry)}
+                    className="p-2 text-[#A1A1AA] hover:text-[#EF4444]"
+                    title={fr ? 'Supprimer' : 'Delete'}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing && (
+        <ContentEditorModal
+          entry={editing === 'new' ? null : editing}
+          defaultType={tab}
+          fr={fr}
+          onClose={() => setEditing(null)}
+          onSaved={() => {
+            setEditing(null);
+            setDirtySincePublish(true);
+            fetchEntries();
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+const ContentEditorModal = ({ entry, defaultType, fr, onClose, onSaved }) => {
+  const isNew = !entry;
+  const [saving, setSaving] = useState(false);
+  const [slugTouched, setSlugTouched] = useState(!isNew);
+  const [form, setForm] = useState({
+    type: entry?.type || defaultType,
+    slug: entry?.slug || '',
+    title: entry?.title || '',
+    meta_description: entry?.meta_description || '',
+    question: entry?.question || '',
+    answer: entry?.answer || '',
+    body: entry?.body || '',
+    cluster: entry?.cluster || '',
+    published: entry?.published || false,
+    order: entry?.order ?? 0
+  });
+
+  const isFaq = form.type === 'faq';
+
+  // Le slug se derive du titre tant que l'admin ne l'a pas edite manuellement
+  const setTitle = (value) => {
+    setForm((prev) => ({
+      ...prev,
+      title: value,
+      slug: slugTouched ? prev.slug : slugify(value)
+    }));
+  };
+  const setQuestion = (value) => {
+    setForm((prev) => ({
+      ...prev,
+      question: value,
+      title: value,
+      slug: slugTouched ? prev.slug : slugify(value)
+    }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    if (isFaq && (!form.question.trim() || !form.answer.trim())) {
+      toast.error(fr ? 'Question et réponse sont obligatoires' : 'Question and answer are required');
+      return;
+    }
+    if (!isFaq && (!form.title.trim() || !form.body.trim())) {
+      toast.error(fr ? 'Titre et contenu sont obligatoires' : 'Title and body are required');
+      return;
+    }
+    if (!form.slug.trim()) {
+      toast.error(fr ? 'Le slug est obligatoire' : 'Slug is required');
+      return;
+    }
+
+    const payload = {
+      type: form.type,
+      slug: form.slug.trim(),
+      title: (isFaq ? form.question : form.title).trim(),
+      meta_description: form.meta_description.trim(),
+      question: isFaq ? form.question.trim() : null,
+      answer: isFaq ? form.answer.trim() : null,
+      body: isFaq ? null : form.body,
+      cluster: form.cluster.trim() || null,
+      published: form.published,
+      order: parseInt(form.order) || 0
+    };
+
+    setSaving(true);
+    try {
+      if (isNew) {
+        await api.post('/admin/content', payload);
+      } else {
+        await api.put(`/admin/content/${entry.content_id}`, payload);
+      }
+      toast.success(fr ? 'Enregistré !' : 'Saved!');
+      onSaved();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const bodyWords = form.body.trim() ? form.body.trim().split(/\s+/).length : 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg w-full max-w-3xl max-h-[92vh] overflow-y-auto" data-testid="content-editor">
+        <div className="p-6 border-b border-[#2A2A2A] flex justify-between items-center sticky top-0 bg-[#141414] z-10">
+          <h2 className="font-['Bebas_Neue'] text-2xl">
+            {isNew
+              ? (isFaq ? (fr ? 'Nouvelle question' : 'New question') : (fr ? 'Nouveau guide' : 'New guide'))
+              : (fr ? 'Modifier' : 'Edit')}
+          </h2>
+          <button onClick={onClose} className="text-[#71717A] hover:text-white"><X className="w-6 h-6" /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {isNew && (
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Type de contenu' : 'Content type'}</label>
+              <div className="flex gap-2">
+                {[
+                  { key: 'guide', label: fr ? 'Guide (page dédiée)' : 'Guide (own page)' },
+                  { key: 'faq', label: fr ? 'Question de FAQ' : 'FAQ question' }
+                ].map(({ key, label }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setForm({ ...form, type: key })}
+                    className={`px-4 py-2 rounded-md text-sm border transition-colors ${
+                      form.type === key
+                        ? 'border-[#D4AF37] bg-[#D4AF37]/10 text-[#D4AF37]'
+                        : 'border-[#2A2A2A] text-[#A1A1AA] hover:border-[#71717A]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isFaq ? (
+            <>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {fr ? 'Question (telle que les gens la tapent sur Google)' : 'Question'}
+                </label>
+                <input
+                  type="text"
+                  value={form.question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  className="input-dark w-full px-4 py-2.5 rounded-md"
+                  placeholder={fr ? 'Combien coûte le fret maritime Chine-Douala ?' : 'How much is sea freight?'}
+                  required
+                  data-testid="faq-question-input"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Réponse' : 'Answer'}</label>
+                <textarea
+                  value={form.answer}
+                  onChange={(e) => setForm({ ...form, answer: e.target.value })}
+                  className="input-dark w-full px-4 py-2.5 rounded-md h-40 resize-y"
+                  placeholder={fr
+                    ? 'Réponse complète et autonome : donnez des chiffres précis, ce sont eux que Google et les IA reprennent.'
+                    : 'A complete, self-contained answer with precise figures.'}
+                  required
+                  data-testid="faq-answer-input"
+                />
+                <p className="text-xs text-[#71717A] mt-1">
+                  {fr
+                    ? 'Conseil : 3 à 5 phrases, avec au moins un chiffre concret et le nom de votre plateforme.'
+                    : 'Tip: 3-5 sentences with at least one concrete figure.'}
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {fr ? 'Titre de la page' : 'Page title'}
+                </label>
+                <input
+                  type="text"
+                  value={form.title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="input-dark w-full px-4 py-2.5 rounded-md"
+                  placeholder={fr ? 'Fret aérien Chine-Cameroun : tarifs, délais, quand le choisir' : 'Air freight China-Cameroon'}
+                  required
+                  data-testid="guide-title-input"
+                />
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm text-[#A1A1AA] mb-2">
+                    {fr ? 'Adresse de la page' : 'Page URL'}
+                  </label>
+                  <div className="flex items-center">
+                    <span className="text-xs text-[#71717A] font-mono px-2 py-2.5 bg-[#0A0A0A] border border-r-0 border-[#2A2A2A] rounded-l-md whitespace-nowrap">
+                      /guides/
+                    </span>
+                    <input
+                      type="text"
+                      value={form.slug}
+                      onChange={(e) => { setSlugTouched(true); setForm({ ...form, slug: e.target.value }); }}
+                      className="input-dark flex-1 px-3 py-2.5 rounded-r-md font-mono text-sm min-w-0"
+                      required
+                      data-testid="guide-slug-input"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm text-[#A1A1AA] mb-2">
+                    {fr ? 'Grappe thématique' : 'Content cluster'}
+                  </label>
+                  <input
+                    type="text"
+                    value={form.cluster}
+                    onChange={(e) => setForm({ ...form, cluster: e.target.value })}
+                    className="input-dark w-full px-4 py-2.5 rounded-md"
+                    placeholder={fr ? 'Transport, fret et douane' : 'Shipping and customs'}
+                    list="cluster-suggestions"
+                  />
+                  <datalist id="cluster-suggestions">
+                    <option value="Voyager en Chine pour acheter" />
+                    <option value="Les villes et marchés de gros chinois" />
+                    <option value="Trouver et vérifier un fournisseur" />
+                    <option value="Transport, fret et douane" />
+                    <option value="Payer et financer" />
+                    <option value="Rentabilité par secteur" />
+                    <option value="Se former et décider" />
+                  </datalist>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {fr ? 'Contenu' : 'Body'}
+                  <span className="text-xs text-[#71717A] ml-2">{bodyWords} {fr ? 'mots' : 'words'}</span>
+                </label>
+                <textarea
+                  value={form.body}
+                  onChange={(e) => setForm({ ...form, body: e.target.value })}
+                  className="input-dark w-full px-4 py-3 rounded-md h-80 resize-y font-mono text-sm leading-relaxed"
+                  placeholder={fr
+                    ? '## Un titre de section\n\nUn paragraphe avec du **gras**.\n\n- un point de liste\n- un autre\n\n| Mode | Prix | Délai |\n| --- | --- | --- |\n| Aérien | 8 997 F/kg | 7-15 j |\n\n> Une remarque mise en avant.'
+                    : '## Section title\n\nA paragraph with **bold**.\n\n- list item\n\n| A | B |\n| --- | --- |'}
+                  required
+                  data-testid="guide-body-input"
+                />
+                <p className="text-xs text-[#71717A] mt-1">
+                  {fr
+                    ? 'Mise en forme : ## titre, ### sous-titre, - liste, 1. liste numérotée, **gras**, *italique*, [texte](/lien), > remarque, et tableaux avec des barres verticales.'
+                    : 'Formatting: ## heading, - list, **bold**, [text](/link), > note, and pipe tables.'}
+                </p>
+              </div>
+            </>
+          )}
+
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">
+              {fr ? 'Description pour Google (150-160 caractères)' : 'Meta description'}
+              <span className={`text-xs ml-2 ${form.meta_description.length > 160 ? 'text-[#EF4444]' : 'text-[#71717A]'}`}>
+                {form.meta_description.length}/160
+              </span>
+            </label>
+            <textarea
+              value={form.meta_description}
+              onChange={(e) => setForm({ ...form, meta_description: e.target.value })}
+              className="input-dark w-full px-4 py-2.5 rounded-md h-20 resize-y"
+              placeholder={fr
+                ? "Ce texte s'affiche sous le titre dans les résultats Google. Soyez concret."
+                : 'Shown under the title in Google results.'}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-5 pt-1">
+            <label className="flex items-center gap-2 text-sm text-[#A1A1AA] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.published}
+                onChange={(e) => setForm({ ...form, published: e.target.checked })}
+                className="accent-[#D4AF37]"
+                data-testid="content-published-checkbox"
+              />
+              {fr ? 'Publier maintenant' : 'Publish now'}
+            </label>
+            <label className="flex items-center gap-2 text-sm text-[#A1A1AA]">
+              {fr ? 'Ordre' : 'Order'}
+              <input
+                type="number"
+                value={form.order}
+                onChange={(e) => setForm({ ...form, order: e.target.value })}
+                className="input-dark w-20 px-3 py-1.5 rounded-md"
+              />
+            </label>
+          </div>
+
+          <div className="flex gap-4 pt-3">
+            <button type="button" onClick={onClose} className="btn-outline px-6 py-3 rounded-md flex-1">
+              {fr ? 'Annuler' : 'Cancel'}
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="btn-gold px-6 py-3 rounded-md flex-1 flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="save-content-btn"
+            >
+              {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : (fr ? 'Enregistrer' : 'Save')}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   );

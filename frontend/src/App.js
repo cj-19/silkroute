@@ -22,6 +22,8 @@ import ResetPasswordPage from "@/pages/ResetPasswordPage";
 import VerifyEmailPage from "@/pages/VerifyEmailPage";
 import SettingsPage from "@/pages/SettingsPage";
 import FAQPage from "@/pages/FAQPage";
+import GuidesIndexPage from "@/pages/GuidesIndexPage";
+import GuidePage from "@/pages/GuidePage";
 import { TermsPage, PrivacyPage, ContactPage } from "@/pages/LegalPages";
 import NotFoundPage from "@/pages/NotFoundPage";
 
@@ -68,6 +70,8 @@ const AppRouter = () => {
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/faq" element={<FAQPage />} />
+      <Route path="/guides" element={<GuidesIndexPage />} />
+      <Route path="/guides/:slug" element={<GuidePage />} />
 
       <Route path="/settings" element={
         <ProtectedRoute>

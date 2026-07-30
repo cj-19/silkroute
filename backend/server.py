@@ -2457,6 +2457,164 @@ async def send_message(sid, data):
     await sio.emit("new_message", broadcast_data, room=room_id)
 
 # ========================
+# CONTENU EDITORIAL (FAQ + guides) — gere depuis l'espace admin
+# ========================
+#
+# Le contenu est stocke en base et sert deux usages :
+#   1. l'affichage dans l'application React (pages /faq et /guides/<slug>) ;
+#   2. le prerendu au moment du build, qui interroge les routes publiques
+#      ci-dessous pour ecrire des pages HTML statiques lisibles par les robots
+#      qui n'executent pas JavaScript (assistants IA, apercus WhatsApp).
+#
+# Publier depuis l'admin ne suffit donc pas a rendre une page visible des
+# robots : il faut un nouveau build. La route /admin/content/rebuild declenche
+# ce build via le hook de deploiement Vercel (VERCEL_DEPLOY_HOOK_URL).
+
+CONTENT_TYPES = ("faq", "guide")
+SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+class ContentCreate(BaseModel):
+    type: str
+    slug: str
+    title: str
+    meta_description: str = ""
+    # Champs FAQ
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    # Champs guide (corps en markdown simplifie : ##, -, **gras**)
+    body: Optional[str] = None
+    cluster: Optional[str] = None
+    published: bool = False
+    order: int = 0
+
+    @field_validator("type")
+    @classmethod
+    def validate_type(cls, v: str) -> str:
+        if v not in CONTENT_TYPES:
+            raise ValueError(f"type must be one of: {', '.join(CONTENT_TYPES)}")
+        return v
+
+    @field_validator("slug")
+    @classmethod
+    def validate_slug(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not SLUG_RE.match(v):
+            raise ValueError(
+                "Le slug ne peut contenir que des minuscules, des chiffres et des tirets "
+                "(ex: fret-aerien-chine-cameroun)"
+            )
+        return v
+
+def _public_content(doc: dict) -> dict:
+    return {k: v for k, v in doc.items() if k not in ("_id", "created_by")}
+
+@api_router.get("/content")
+async def list_content(type: Optional[str] = None):
+    """Contenu publie, accessible publiquement (alimente la FAQ, les guides
+    et le prerendu au build)."""
+    query = {"published": True}
+    if type:
+        if type not in CONTENT_TYPES:
+            raise HTTPException(status_code=400, detail="Invalid content type")
+        query["type"] = type
+    entries = await db.content_entries.find(query, {"_id": 0, "created_by": 0}) \
+        .sort([("order", 1), ("created_at", 1)]).to_list(500)
+    return entries
+
+@api_router.get("/content/{slug}")
+async def get_content(slug: str):
+    entry = await db.content_entries.find_one(
+        {"slug": slug, "published": True}, {"_id": 0, "created_by": 0}
+    )
+    if not entry:
+        raise HTTPException(status_code=404, detail="Content not found")
+    return entry
+
+@api_router.get("/admin/content")
+async def admin_list_content(type: Optional[str] = None, admin: dict = Depends(require_admin)):
+    """Tout le contenu, brouillons inclus."""
+    query = {}
+    if type:
+        query["type"] = type
+    entries = await db.content_entries.find(query, {"_id": 0}) \
+        .sort([("type", 1), ("order", 1), ("created_at", 1)]).to_list(500)
+    return entries
+
+@api_router.post("/admin/content")
+async def create_content(entry: ContentCreate, admin: dict = Depends(require_admin)):
+    existing = await db.content_entries.find_one({"slug": entry.slug})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"Le slug « {entry.slug} » est déjà utilisé")
+
+    doc = {
+        "content_id": f"cnt_{uuid.uuid4().hex[:12]}",
+        **entry.model_dump(),
+        "created_by": admin["user_id"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.content_entries.insert_one(doc)
+    return _public_content(doc)
+
+@api_router.put("/admin/content/{content_id}")
+async def update_content(content_id: str, request: Request, admin: dict = Depends(require_admin)):
+    existing = await db.content_entries.find_one({"content_id": content_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    data = await request.json()
+    allowed = ["title", "meta_description", "question", "answer", "body",
+               "cluster", "published", "order", "slug"]
+    update_data = {k: v for k, v in data.items() if k in allowed}
+
+    if "slug" in update_data:
+        slug = str(update_data["slug"]).strip().lower()
+        if not SLUG_RE.match(slug):
+            raise HTTPException(status_code=400, detail="Slug invalide (minuscules, chiffres, tirets)")
+        clash = await db.content_entries.find_one({"slug": slug, "content_id": {"$ne": content_id}})
+        if clash:
+            raise HTTPException(status_code=400, detail=f"Le slug « {slug} » est déjà utilisé")
+        update_data["slug"] = slug
+
+    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.content_entries.update_one({"content_id": content_id}, {"$set": update_data})
+    updated = await db.content_entries.find_one({"content_id": content_id}, {"_id": 0})
+    return updated
+
+@api_router.delete("/admin/content/{content_id}")
+async def delete_content(content_id: str, admin: dict = Depends(require_admin)):
+    result = await db.content_entries.delete_one({"content_id": content_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Content not found")
+    return {"message": "Content deleted"}
+
+@api_router.post("/admin/content/rebuild")
+async def rebuild_site(admin: dict = Depends(require_admin)):
+    """Declenche un nouveau build du frontend pour que le contenu publie soit
+    integre aux pages statiques (et donc visible des robots sans JavaScript)."""
+    hook = os.environ.get("VERCEL_DEPLOY_HOOK_URL", "").strip()
+    if not hook:
+        raise HTTPException(
+            status_code=503,
+            detail="VERCEL_DEPLOY_HOOK_URL n'est pas configuré. Ajoutez cette variable "
+                   "sur Railway (Vercel > Settings > Git > Deploy Hooks) pour publier "
+                   "sans passer par un déploiement manuel."
+        )
+    try:
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(hook, timeout=20)
+        if response.status_code >= 400:
+            logger.error(f"Deploy hook error {response.status_code}: {response.text[:200]}")
+            raise HTTPException(status_code=502, detail="Le déclenchement du build a échoué")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Deploy hook failed: {e}")
+        raise HTTPException(status_code=502, detail="Le déclenchement du build a échoué")
+
+    return {"message": "Build lancé. Les pages statiques seront à jour dans 2 à 3 minutes."}
+
+# ========================
 # ROOT ROUTE
 # ========================
 

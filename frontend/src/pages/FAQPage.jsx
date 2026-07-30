@@ -1,19 +1,37 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { Layout } from '@/components/Layout';
 import { ChevronDown, ChevronUp, HelpCircle } from 'lucide-react';
 import { useSeo, useJsonLd } from '@/hooks/useSeo';
+import { api } from '@/lib/api';
 
-// Le contenu des questions/reponses vit dans src/data/faq.json : source unique
-// partagee entre cette page React et le script de prerendu (scripts/prerender.js),
-// afin que les robots recoivent exactement le meme contenu que les visiteurs.
-import FAQ_ITEMS from '@/data/faq.json';
+// Questions de base : src/data/faq.json est la source unique partagee entre cette
+// page React et le script de prerendu (scripts/prerender.js), afin que les robots
+// recoivent exactement le meme contenu que les visiteurs.
+import BASE_FAQ from '@/data/faq.json';
 
 const FAQPage = () => {
   const { i18n } = useTranslation();
   const fr = i18n.language === 'fr';
   const [openIdx, setOpenIdx] = useState(0);
+
+  // Questions ajoutees depuis l'espace admin, concatenees aux questions de base.
+  const [extraFaq, setExtraFaq] = useState([]);
+  useEffect(() => {
+    api.get('/content?type=faq')
+      .then((res) => setExtraFaq(
+        res.data.map((e) => ({
+          q: e.question || e.title,
+          q_en: e.question || e.title,
+          a: e.answer || '',
+          a_en: e.answer || ''
+        }))
+      ))
+      .catch(() => setExtraFaq([]));
+  }, []);
+
+  const FAQ_ITEMS = useMemo(() => [...BASE_FAQ, ...extraFaq], [extraFaq]);
 
   useSeo({
     title: fr
@@ -36,7 +54,7 @@ const FAQPage = () => {
       name: item.q,
       acceptedAnswer: { '@type': 'Answer', text: item.a }
     }))
-  }), []);
+  }), [FAQ_ITEMS]);
   useJsonLd(jsonLd, 'faq-jsonld');
 
   return (

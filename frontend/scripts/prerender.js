@@ -18,10 +18,41 @@
  */
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 
 const BUILD_DIR = path.join(__dirname, '..', 'build');
 const SITE_URL = 'https://www.silkroute.africa';
+const API_URL = (process.env.REACT_APP_BACKEND_URL || 'https://api.silkroute.africa').replace(/\/$/, '');
 const faqItems = require('../src/data/faq.json');
+
+// Recupere le contenu publie depuis l'API. En cas d'indisponibilite, le build
+// continue avec le contenu statique seul : une API momentanement injoignable ne
+// doit jamais empecher un deploiement.
+const fetchJson = (url) =>
+  new Promise((resolve) => {
+    const client = url.startsWith('https:') ? https : http;
+    const req = client.get(url, { timeout: 15000 }, (res) => {
+      if (res.statusCode !== 200) {
+        console.warn(`[prerender] ${url} a repondu ${res.statusCode} — contenu distant ignore.`);
+        res.resume();
+        return resolve(null);
+      }
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { raw += chunk; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(raw));
+        } catch (err) {
+          console.warn(`[prerender] reponse illisible depuis ${url} : ${err.message}`);
+          resolve(null);
+        }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); console.warn(`[prerender] delai depasse sur ${url}`); resolve(null); });
+    req.on('error', (err) => { console.warn(`[prerender] ${url} injoignable : ${err.message}`); resolve(null); });
+  });
 
 // --- Utilitaires -----------------------------------------------------------
 
@@ -34,6 +65,82 @@ const escapeHtml = (str) =>
 
 const p = (text) => `<p>${escapeHtml(text)}</p>`;
 const li = (text) => `<li>${escapeHtml(text)}</li>`;
+
+// Conversion du markdown simplifie des guides en HTML statique. Doit rester
+// alignee sur src/components/RichText.jsx (meme syntaxe supportee) pour que les
+// robots et les visiteurs voient le meme contenu.
+const inline = (text) =>
+  escapeHtml(text)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+const markdownToHtml = (body) => {
+  if (!body) return '';
+  const lines = String(body).replace(/\r\n/g, '\n').split('\n');
+  const out = [];
+  let i = 0;
+
+  const isBlockStart = (line) => /^(#{2,3} |[-*] |\d+\.\s|\||> )/.test(line.trim());
+
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (!t) { i += 1; continue; }
+
+    if (t.startsWith('### ')) { out.push(`<h3>${inline(t.slice(4))}</h3>`); i += 1; continue; }
+    if (t.startsWith('## ')) { out.push(`<h2>${inline(t.slice(3))}</h2>`); i += 1; continue; }
+
+    if (t.startsWith('|')) {
+      const rows = [];
+      while (i < lines.length && lines[i].trim().startsWith('|')) {
+        const cells = lines[i].trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+        if (!cells.every((c) => /^:?-{2,}:?$/.test(c))) rows.push(cells);
+        i += 1;
+      }
+      if (rows.length) {
+        const [head, ...rest] = rows;
+        out.push(
+          '<table><thead><tr>' +
+          head.map((c) => `<th>${inline(c)}</th>`).join('') +
+          '</tr></thead><tbody>' +
+          rest.map((r) => '<tr>' + r.map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>').join('') +
+          '</tbody></table>'
+        );
+      }
+      continue;
+    }
+
+    if (t.startsWith('> ')) {
+      const q = [];
+      while (i < lines.length && lines[i].trim().startsWith('> ')) { q.push(lines[i].trim().slice(2)); i += 1; }
+      out.push(`<blockquote>${inline(q.join(' '))}</blockquote>`);
+      continue;
+    }
+
+    if (/^[-*] /.test(t)) {
+      const items = [];
+      while (i < lines.length && /^[-*] /.test(lines[i].trim())) { items.push(lines[i].trim().slice(2)); i += 1; }
+      out.push('<ul>' + items.map((x) => `<li>${inline(x)}</li>`).join('') + '</ul>');
+      continue;
+    }
+
+    if (/^\d+\.\s/.test(t)) {
+      const items = [];
+      while (i < lines.length && /^\d+\.\s/.test(lines[i].trim())) {
+        items.push(lines[i].trim().replace(/^\d+\.\s/, ''));
+        i += 1;
+      }
+      out.push('<ol>' + items.map((x) => `<li>${inline(x)}</li>`).join('') + '</ol>');
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !isBlockStart(lines[i])) { para.push(lines[i].trim()); i += 1; }
+    out.push(`<p>${inline(para.join(' '))}</p>`);
+  }
+
+  return out.join('\n');
+};
 
 // Navigation et pied de page : presents sur toutes les pages prerendues, ils
 // donnent aux robots le maillage interne du site des le premier passage.
@@ -78,7 +185,7 @@ const FAQ_JSONLD = {
   }))
 };
 
-const routes = [
+const staticRoutes = [
   {
     path: '/',
     title: 'SilkRoute — Achats groupés Chine-Afrique, importez au prix de gros',
@@ -273,44 +380,180 @@ const renderRoute = (route) => {
   return html;
 };
 
-let count = 0;
-let failures = 0;
+// Construit les routes des guides publies depuis l'admin, plus leur index.
+const buildRemoteRoutes = (guides, remoteFaq) => {
+  const routes = [];
 
-routes.forEach((route) => {
-  // Une erreur sur une route est signalee mais n'interrompt pas les autres :
-  // le build reste exploitable (la route non prerendue reste servie en SPA).
-  try {
-    const html = renderRoute(route);
+  if (guides.length) {
+    const byCluster = {};
+    guides.forEach((g) => {
+      const key = g.cluster || 'Guides';
+      if (!byCluster[key]) byCluster[key] = [];
+      byCluster[key].push(g);
+    });
 
-    if (html.indexOf('<div id="root">') === -1) {
-      throw new Error('le conteneur #root n\'a pas ete trouve dans le gabarit');
-    }
-    if ((html.match(/<title>/g) || []).length !== 1) {
-      throw new Error('nombre de balises <title> inattendu');
-    }
-
-    const outDir = route.path === '/' ? BUILD_DIR : path.join(BUILD_DIR, route.path);
-    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-    const outFile = path.join(outDir, 'index.html');
-    fs.writeFileSync(outFile, html, 'utf8');
-
-    const words = route.body.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length;
-    console.log(
-      `[prerender] ${route.path.padEnd(12)} -> ${path.relative(BUILD_DIR, outFile)} (${words} mots)`
-    );
-    count += 1;
-  } catch (err) {
-    failures += 1;
-    console.error(`[prerender] ECHEC sur ${route.path} : ${err.message}`);
+    routes.push({
+      path: '/guides',
+      title: "Guides : importer de Chine vers l'Afrique | SilkRoute",
+      description:
+        "Fret aérien et maritime, foire de Canton, vérification des fournisseurs, dédouanement, marges : nos guides pratiques avec des chiffres réels.",
+      body: `
+<h1>Guides pratiques</h1>
+${p("Tarifs de fret réels, démarches, calculs de marge : ce qu'il faut savoir pour importer depuis la Chine.")}
+${Object.entries(byCluster).map(([cluster, items]) => `
+<section>
+  <h2>${escapeHtml(cluster)}</h2>
+  <ul>
+    ${items.map((g) => `<li><a href="/guides/${escapeHtml(g.slug)}">${escapeHtml(g.title)}</a>${g.meta_description ? ` — ${escapeHtml(g.meta_description)}` : ''}</li>`).join('\n    ')}
+  </ul>
+</section>`).join('\n')}`
+    });
   }
-});
 
-console.log(`[prerender] ${count}/${routes.length} pages prerendues${failures ? ` (${failures} echec(s))` : ''}.`);
+  guides.forEach((g) => {
+    routes.push({
+      path: `/guides/${g.slug}`,
+      title: `${g.title} | SilkRoute`,
+      description: g.meta_description || '',
+      jsonLd: {
+        '@context': 'https://schema.org',
+        '@type': 'Article',
+        headline: g.title,
+        description: g.meta_description || '',
+        inLanguage: 'fr',
+        datePublished: g.created_at,
+        dateModified: g.updated_at || g.created_at,
+        author: { '@type': 'Organization', name: 'SilkRoute' },
+        publisher: { '@type': 'Organization', name: 'SilkRoute' },
+        mainEntityOfPage: `${SITE_URL}/guides/${g.slug}`
+      },
+      body: `
+<article>
+  ${g.cluster ? `<p>${escapeHtml(g.cluster)}</p>` : ''}
+  <h1>${escapeHtml(g.title)}</h1>
+  ${g.meta_description ? p(g.meta_description) : ''}
+  ${markdownToHtml(g.body)}
+</article>
+<p><a href="/groupages">Voir les groupages ouverts</a> — <a href="/faq">FAQ</a></p>`
+    });
+  });
 
-// Si aucune page n'a pu etre generee, quelque chose de structurel a change dans
-// le gabarit : on fait echouer le build pour que le probleme soit visible
-// (Vercel conserve alors le deploiement precedent, le site reste en ligne).
-if (count === 0) {
-  console.error('[prerender] Aucune page generee — build interrompu.');
+  // Les questions ajoutees depuis l'admin enrichissent la page /faq deja prerendue.
+  if (remoteFaq.length) {
+    const faqRoute = staticRoutes.find((r) => r.path === '/faq');
+    if (faqRoute) {
+      const extra = remoteFaq.map((e) => ({
+        q: e.question || e.title,
+        a: e.answer || ''
+      }));
+      faqRoute.body += '\n' + extra
+        .map((it) => `<section><h2>${escapeHtml(it.q)}</h2>${p(it.a)}</section>`)
+        .join('\n');
+      faqRoute.jsonLd = {
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: faqItems.concat(extra).map((item) => ({
+          '@type': 'Question',
+          name: item.q,
+          acceptedAnswer: { '@type': 'Answer', text: item.a }
+        }))
+      };
+    }
+  }
+
+  return routes;
+};
+
+const writeRoute = (route) => {
+  const html = renderRoute(route);
+
+  if (html.indexOf('<div id="root">') === -1) {
+    throw new Error('le conteneur #root n\'a pas ete trouve dans le gabarit');
+  }
+  if ((html.match(/<title>/g) || []).length !== 1) {
+    throw new Error('nombre de balises <title> inattendu');
+  }
+
+  const outDir = route.path === '/' ? BUILD_DIR : path.join(BUILD_DIR, route.path);
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  const outFile = path.join(outDir, 'index.html');
+  fs.writeFileSync(outFile, html, 'utf8');
+
+  const words = route.body.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length;
+  console.log(`[prerender] ${route.path.padEnd(34)} ${String(words).padStart(5)} mots`);
+};
+
+const writeSitemap = (routes) => {
+  const priority = (p) => (p === '/' ? '1.0' : p === '/faq' || p === '/groupages' ? '0.9' : p.startsWith('/guides') ? '0.8' : '0.5');
+  const freq = (p) => (p === '/groupages' ? 'daily' : p === '/' ? 'weekly' : 'monthly');
+  const urls = routes
+    .filter((r) => !['/login', '/register'].includes(r.path))
+    .map((r) => `  <url>
+    <loc>${SITE_URL}${r.path}</loc>
+    <changefreq>${freq(r.path)}</changefreq>
+    <priority>${priority(r.path)}</priority>
+  </url>`)
+    .join('\n');
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+  <url>
+    <loc>${SITE_URL}/terms</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>${SITE_URL}/privacy</loc>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+</urlset>
+`;
+  fs.writeFileSync(path.join(BUILD_DIR, 'sitemap.xml'), xml, 'utf8');
+  console.log(`[prerender] sitemap.xml regenere (${routes.length + 2} URLs)`);
+};
+
+const main = async () => {
+  console.log(`[prerender] contenu distant depuis ${API_URL}`);
+  const [guidesRaw, faqRaw] = await Promise.all([
+    fetchJson(`${API_URL}/api/content?type=guide`),
+    fetchJson(`${API_URL}/api/content?type=faq`)
+  ]);
+
+  const guides = Array.isArray(guidesRaw) ? guidesRaw.filter((g) => g.slug && g.body) : [];
+  const remoteFaq = Array.isArray(faqRaw) ? faqRaw.filter((f) => f.question && f.answer) : [];
+  console.log(`[prerender] ${guides.length} guide(s) et ${remoteFaq.length} question(s) recuperes`);
+
+  const remoteRoutes = buildRemoteRoutes(guides, remoteFaq);
+  const allRoutes = staticRoutes.concat(remoteRoutes);
+
+  let count = 0;
+  let failures = 0;
+  const written = [];
+
+  allRoutes.forEach((route) => {
+    // Une erreur sur une route est signalee mais n'interrompt pas les autres :
+    // le build reste exploitable (la route concernee est servie en SPA).
+    try {
+      writeRoute(route);
+      written.push(route);
+      count += 1;
+    } catch (err) {
+      failures += 1;
+      console.error(`[prerender] ECHEC sur ${route.path} : ${err.message}`);
+    }
+  });
+
+  if (count === 0) {
+    console.error('[prerender] Aucune page generee — build interrompu.');
+    process.exit(1);
+  }
+
+  writeSitemap(written);
+  console.log(`[prerender] ${count}/${allRoutes.length} pages prerendues${failures ? ` (${failures} echec(s))` : ''}.`);
+};
+
+main().catch((err) => {
+  console.error(`[prerender] erreur inattendue : ${err.message}`);
   process.exit(1);
-}
+});
