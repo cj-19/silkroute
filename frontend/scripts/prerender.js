@@ -484,33 +484,42 @@ const writeRoute = (route) => {
 };
 
 const writeSitemap = (routes) => {
-  const priority = (p) => (p === '/' ? '1.0' : p === '/faq' || p === '/groupages' ? '0.9' : p.startsWith('/guides') ? '0.8' : '0.5');
-  const freq = (p) => (p === '/groupages' ? 'daily' : p === '/' ? 'weekly' : 'monthly');
-  const urls = routes
-    .filter((r) => !['/login', '/register'].includes(r.path))
-    .map((r) => `  <url>
-    <loc>${SITE_URL}${r.path}</loc>
-    <changefreq>${freq(r.path)}</changefreq>
-    <priority>${priority(r.path)}</priority>
-  </url>`)
-    .join('\n');
+  // Les pages de connexion et d'inscription n'ont pas d'interet dans un sitemap :
+  // elles ne repondent a aucune requete de recherche.
+  const EXCLUDED = ['/login', '/register'];
+
+  const priority = (p) => {
+    if (p === '/') return '1.0';
+    if (p === '/faq' || p === '/groupages') return '0.9';
+    if (p.startsWith('/guides')) return '0.8';
+    if (p === '/terms' || p === '/privacy') return '0.3';
+    return '0.5';
+  };
+  const freq = (p) => {
+    if (p === '/groupages') return 'daily';
+    if (p === '/') return 'weekly';
+    if (p === '/terms' || p === '/privacy') return 'yearly';
+    return 'monthly';
+  };
+
+  const paths = [];
+  routes.forEach((r) => {
+    if (!EXCLUDED.includes(r.path) && paths.indexOf(r.path) === -1) paths.push(r.path);
+  });
+
+  const urls = paths.map((p) => `  <url>
+    <loc>${SITE_URL}${p}</loc>
+    <changefreq>${freq(p)}</changefreq>
+    <priority>${priority(p)}</priority>
+  </url>`).join('\n');
+
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls}
-  <url>
-    <loc>${SITE_URL}/terms</loc>
-    <changefreq>yearly</changefreq>
-    <priority>0.3</priority>
-  </url>
-  <url>
-    <loc>${SITE_URL}/privacy</loc>
-    <changefreq>yearly</changefreq>
-    <priority>0.3</priority>
-  </url>
 </urlset>
 `;
   fs.writeFileSync(path.join(BUILD_DIR, 'sitemap.xml'), xml, 'utf8');
-  console.log(`[prerender] sitemap.xml regenere (${routes.length + 2} URLs)`);
+  console.log(`[prerender] sitemap.xml regenere (${paths.length} URLs)`);
 };
 
 const main = async () => {
