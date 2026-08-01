@@ -29,17 +29,37 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-# On lit les variables avec un message explicite plutot qu'une KeyError brute :
-# si l'hebergeur redemarre le conteneur avant d'injecter les variables, le log
-# indique clairement laquelle manque au lieu d'une trace illisible.
-mongo_url = os.environ.get('MONGO_URL')
-db_name = os.environ.get('DB_NAME')
-_missing = [n for n, v in (('MONGO_URL', mongo_url), ('DB_NAME', db_name)) if not v]
-if _missing:
+#
+# Les variables d'environnement peuvent manquer transitoirement au demarrage du
+# conteneur (redeploiement, edition des variables). Sans attente, le processus
+# plante avec une KeyError et l'hebergeur redemarre en boucle : c'est exactement
+# ce qui a provoque 17 crashs successifs le 30 juillet 2026.
+# On patiente donc quelques secondes avant d'abandonner, et l'echec final porte
+# un message qui nomme la variable manquante.
+def _require_env(names, attempts=6, delay_seconds=2):
+    for attempt in range(1, attempts + 1):
+        values = {n: os.environ.get(n) for n in names}
+        missing = [n for n, v in values.items() if not v]
+        if not missing:
+            if attempt > 1:
+                logging.warning(
+                    "Variables d'environnement disponibles apres %s tentative(s).", attempt
+                )
+            return values
+        if attempt < attempts:
+            logging.warning(
+                "Variable(s) manquante(s) au demarrage : %s — nouvelle tentative dans %ss (%s/%s).",
+                ', '.join(missing), delay_seconds, attempt, attempts,
+            )
+            time.sleep(delay_seconds)
     raise RuntimeError(
-        f"Variable(s) d'environnement manquante(s) : {', '.join(_missing)}. "
-        "Verifiez les Variables du service (Railway) avant de redemarrer."
+        f"Variable(s) d'environnement manquante(s) apres {attempts} tentatives : "
+        f"{', '.join(missing)}. Verifiez les Variables du service sur Railway."
     )
+
+_env = _require_env(['MONGO_URL', 'DB_NAME'])
+mongo_url = _env['MONGO_URL']
+db_name = _env['DB_NAME']
 
 # serverSelectionTimeoutMS : sans cette borne, une base injoignable fait attendre
 # 30 s par requete, ce qui sature les workers et fait passer le service pour mort.
