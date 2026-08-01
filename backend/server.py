@@ -29,9 +29,28 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 # MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# On lit les variables avec un message explicite plutot qu'une KeyError brute :
+# si l'hebergeur redemarre le conteneur avant d'injecter les variables, le log
+# indique clairement laquelle manque au lieu d'une trace illisible.
+mongo_url = os.environ.get('MONGO_URL')
+db_name = os.environ.get('DB_NAME')
+_missing = [n for n, v in (('MONGO_URL', mongo_url), ('DB_NAME', db_name)) if not v]
+if _missing:
+    raise RuntimeError(
+        f"Variable(s) d'environnement manquante(s) : {', '.join(_missing)}. "
+        "Verifiez les Variables du service (Railway) avant de redemarrer."
+    )
+
+# serverSelectionTimeoutMS : sans cette borne, une base injoignable fait attendre
+# 30 s par requete, ce qui sature les workers et fait passer le service pour mort.
+client = AsyncIOMotorClient(
+    mongo_url,
+    serverSelectionTimeoutMS=8000,
+    connectTimeoutMS=8000,
+    maxPoolSize=20,
+    retryWrites=True,
+)
+db = client[db_name]
 
 # Cloudinary configuration
 cloudinary.config(
@@ -2621,6 +2640,33 @@ async def rebuild_site(admin: dict = Depends(require_admin)):
 @api_router.get("/")
 async def root():
     return {"message": "SilkRoute API v1.1", "status": "running"}
+
+@api_router.get("/health")
+async def health():
+    """Etat du service et de ses dependances. Permet de distinguer une
+    application morte (aucune reponse) d'une base injoignable (reponse 503)."""
+    checks = {}
+    healthy = True
+
+    started = time.time()
+    try:
+        await client.admin.command("ping")
+        checks["database"] = {"status": "ok", "latency_ms": round((time.time() - started) * 1000)}
+    except Exception as e:
+        healthy = False
+        checks["database"] = {"status": "error", "detail": str(e)[:200]}
+
+    checks["config"] = {
+        "cors_origins": len(CORS_ORIGINS),
+        "jwt_secret": bool(JWT_SECRET),
+        "resend": bool(os.environ.get("RESEND_API_KEY")),
+        "cloudinary": bool(os.environ.get("CLOUDINARY_API_SECRET")),
+        "deploy_hook": bool(os.environ.get("VERCEL_DEPLOY_HOOK_URL")),
+    }
+    checks["websocket_sessions"] = len(sio_user_sessions)
+
+    payload = {"status": "healthy" if healthy else "degraded", "checks": checks}
+    return JSONResponse(status_code=200 if healthy else 503, content=payload)
 
 fastapi_app.include_router(api_router)
 
