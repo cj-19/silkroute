@@ -488,6 +488,9 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     business_license_url: '',
     transitaire_id: '',
     shipping_option_id: '',
+    wholesale_unit_price_fcfa: '',
+    member_unit_price_fcfa: '',
+    solo_unit_price_fcfa: '',
     unit_price_cny: 100,
     solo_unit_price_cny: '',
     unit_weight_kg: 0.5,
@@ -653,6 +656,9 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         },
         transitaire_id: formData.transitaire_id,
         shipping_option_id: formData.shipping_option_id || null,
+        wholesale_unit_price_fcfa: parseFloat(formData.wholesale_unit_price_fcfa) || null,
+        member_unit_price_fcfa: parseFloat(formData.member_unit_price_fcfa) || null,
+        solo_unit_price_fcfa: parseFloat(formData.solo_unit_price_fcfa) || null,
         unit_price_cny: parseFloat(formData.unit_price_cny),
         solo_unit_price_cny: parseFloat(formData.solo_unit_price_cny) || null,
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
@@ -940,9 +946,119 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             />
           </div>
 
-          {/* Les deux paliers de prix fournisseur : le prix de gros (quantite
-              cible) sert au calcul du groupage, le prix au detail alimente la
-              colonne "commande SEUL" du comparateur. */}
+          {/* Prix unitaires saisis DIRECTEMENT en FCFA, tous HORS TRANSPORT
+              (le transport vient de la fiche transitaire et s'ajoute au total).
+              Des qu'un prix membre est saisi ici, il prime sur le calcul CNY. */}
+          <div className="border border-[#D4AF37]/30 bg-[#D4AF37]/5 rounded-lg p-4 space-y-4">
+            <div>
+              <h4 className="text-[#D4AF37] font-medium">
+                {i18n.language === 'fr' ? 'Prix unitaires en FCFA (hors transport)' : 'Unit prices in FCFA (excl. shipping)'}
+              </h4>
+              <p className="text-[11px] text-[#71717A] mt-1">
+                {i18n.language === 'fr'
+                  ? "Le transport est calculé à part depuis la fiche transitaire et ajouté au total. Dès qu'un prix acheteurs est saisi, il remplace le calcul en CNY ci-dessous."
+                  : 'Shipping is computed separately from the forwarder profile and added to the total. Once a buyer price is set, it replaces the CNY calculation below.'}
+              </p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Prix de GROS fournisseur' : 'Supplier WHOLESALE price'}
+                  <span className="ml-2 text-[10px] text-[#F97316]">
+                    {i18n.language === 'fr' ? 'INTERNE' : 'INTERNAL'}
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={formData.wholesale_unit_price_fcfa}
+                  onChange={(e) => setFormData({...formData, wholesale_unit_price_fcfa: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Ce que le fournisseur vous laisse' : 'What the supplier charges you'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  data-testid="wholesale-price-input"
+                />
+                <p className="text-[10px] text-[#71717A] mt-1">
+                  {i18n.language === 'fr'
+                    ? 'Jamais exposé aux acheteurs. Sert uniquement à calculer votre marge.'
+                    : 'Never exposed to buyers. Used only to compute your margin.'}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Prix ACHETEURS sur la plateforme' : 'BUYER price on the platform'}
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={formData.member_unit_price_fcfa}
+                  onChange={(e) => setFormData({...formData, member_unit_price_fcfa: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Ce que le membre paie par unité' : 'What each member pays per unit'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  data-testid="member-price-input"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Prix en ACHAT SEUL' : 'SOLO purchase price'}
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={formData.solo_unit_price_fcfa}
+                  onChange={(e) => setFormData({...formData, solo_unit_price_fcfa: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Palier 1 pièce, sans groupage' : '1-piece tier, no group'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  data-testid="solo-price-fcfa-input"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Prix sur le MARCHÉ camerounais' : 'Cameroonian MARKET price'}
+                </label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={formData.local_price_fcfa}
+                  onChange={(e) => setFormData({...formData, local_price_fcfa: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Chez un grossiste à Douala' : 'At a local wholesaler'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                />
+              </div>
+            </div>
+
+            {/* Marge calculee en direct : uniquement visible ici, dans l'admin. */}
+            {formData.wholesale_unit_price_fcfa && formData.member_unit_price_fcfa && (
+              (() => {
+                const gros = parseFloat(formData.wholesale_unit_price_fcfa);
+                const membre = parseFloat(formData.member_unit_price_fcfa);
+                if (!(gros > 0) || !(membre > 0)) return null;
+                const marge = membre - gros;
+                const pct = (marge / gros) * 100;
+                const fmt = (n) => new Intl.NumberFormat('fr-FR').format(Math.round(n));
+                return (
+                  <div className={`text-sm rounded-md px-3 py-2 ${marge >= 0 ? 'bg-[#22C55E]/10 text-[#22C55E]' : 'bg-[#EF4444]/10 text-[#EF4444]'}`}>
+                    {i18n.language === 'fr' ? 'Marge par unité' : 'Margin per unit'}
+                    {' : '}<strong>{fmt(marge)} FCFA</strong> ({pct.toFixed(1)} %)
+                    {marge < 0 && (
+                      <span className="block text-[11px] mt-1">
+                        {i18n.language === 'fr'
+                          ? 'Vous vendez en dessous de votre prix d\'achat.'
+                          : 'You are selling below your purchase price.'}
+                      </span>
+                    )}
+                  </div>
+                );
+              })()
+            )}
+          </div>
+
+          {/* Ancien mode CNY : conserve pour les groupages deja crees et comme
+              repli quand les prix FCFA ci-dessus ne sont pas renseignes. */}
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
@@ -1125,19 +1241,8 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
             </div>
           </div>
 
+          {/* Le prix grossiste local est saisi plus haut, dans le bloc des prix FCFA. */}
           <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm text-[#A1A1AA] mb-2">
-                {i18n.language === 'fr' ? 'Prix grossiste local (FCFA/unité)' : 'Local wholesaler price (FCFA/unit)'}
-              </label>
-              <input
-                type="number"
-                value={formData.local_price_fcfa}
-                onChange={(e) => setFormData({...formData, local_price_fcfa: e.target.value})}
-                className="input-dark w-full px-4 py-2 rounded-md"
-                required
-              />
-            </div>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">
                 {i18n.language === 'fr' ? 'Prix de vente conseillé (FCFA/unité, optionnel)' : 'Suggested resale price (FCFA/unit, optional)'}
@@ -2308,6 +2413,11 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
     deadline: toLocalInput(groupage.deadline),
     estimated_arrival: toLocalInput(groupage.estimated_arrival),
     local_price_fcfa: groupage.local_price_fcfa ?? '',
+    // Le prix de gros n'est jamais renvoye par l'API : on ne le prerenseigne pas.
+    // Laisse vide, il n'est pas envoye et la valeur en base reste inchangee.
+    wholesale_unit_price_fcfa: '',
+    member_unit_price_fcfa: groupage.member_unit_price_fcfa ?? '',
+    solo_unit_price_fcfa: groupage.solo_unit_price_fcfa ?? '',
     suggested_resale_price_fcfa: groupage.suggested_resale_price_fcfa ?? ''
   });
 
@@ -2372,6 +2482,10 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
       ...(form.internal_cost_cny ? { internal_cost_cny: parseFloat(form.internal_cost_cny) } : {}),
       max_members: parseInt(form.max_members),
       local_price_fcfa: parseFloat(form.local_price_fcfa) || 0,
+      member_unit_price_fcfa: form.member_unit_price_fcfa === '' ? null : parseFloat(form.member_unit_price_fcfa),
+      solo_unit_price_fcfa: form.solo_unit_price_fcfa === '' ? null : parseFloat(form.solo_unit_price_fcfa),
+      // Laisse vide = on n'y touche pas (le prix de gros n'est jamais relu depuis l'API)
+      ...(form.wholesale_unit_price_fcfa ? { wholesale_unit_price_fcfa: parseFloat(form.wholesale_unit_price_fcfa) } : {}),
       suggested_resale_price_fcfa: form.suggested_resale_price_fcfa === '' ? null : parseFloat(form.suggested_resale_price_fcfa)
     };
     if (form.deadline) payload.deadline = new Date(form.deadline).toISOString();
@@ -2566,6 +2680,32 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Prix local (FCFA)' : 'Local price (FCFA)'}</label>
               <input type="number" value={form.local_price_fcfa} onChange={(e) => set({ local_price_fcfa: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {fr ? 'Prix ACHETEURS (FCFA, hors transport)' : 'BUYER price (FCFA, excl. shipping)'}
+              </label>
+              <input type="number" value={form.member_unit_price_fcfa}
+                onChange={(e) => set({ member_unit_price_fcfa: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {fr ? 'Prix ACHAT SEUL (FCFA, hors transport)' : 'SOLO price (FCFA, excl. shipping)'}
+              </label>
+              <input type="number" value={form.solo_unit_price_fcfa}
+                onChange={(e) => set({ solo_unit_price_fcfa: e.target.value })}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {fr ? 'Prix de GROS fournisseur (FCFA)' : 'Supplier WHOLESALE price (FCFA)'}
+                <span className="ml-2 text-[10px] text-[#F97316]">{fr ? 'INTERNE' : 'INTERNAL'}</span>
+              </label>
+              <input type="number" value={form.wholesale_unit_price_fcfa}
+                onChange={(e) => set({ wholesale_unit_price_fcfa: e.target.value })}
+                placeholder={fr ? 'Laisser vide = inchangé' : 'Leave blank = unchanged'}
                 className="input-dark w-full px-4 py-2 rounded-md" />
             </div>
             <div>

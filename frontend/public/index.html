@@ -17,12 +17,20 @@
         <meta property="og:url" content="https://www.silkroute.africa/" />
         <meta name="twitter:card" content="summary" />
         <script>
-            /* Applique le theme choisi avant le rendu React pour eviter un flash */
-            try {
-                if (localStorage.getItem('silkroute_theme') === 'light') {
+            /* Applique le theme choisi avant le rendu React pour eviter un flash.
+               Doit rester synchrone avec THEMES dans src/components/Layout.jsx.
+               Le theme CLAIR est celui par defaut. */
+            (function () {
+                try {
+                    var themes = ['light', 'dark', 'whatsapp'];
+                    var saved = localStorage.getItem('silkroute_theme');
+                    var theme = themes.indexOf(saved) !== -1 ? saved : 'light';
+                    document.documentElement.classList.add(theme);
+                    if (theme === 'dark') document.documentElement.classList.add('dark');
+                } catch (e) {
                     document.documentElement.classList.add('light');
                 }
-            } catch (e) {}
+            })();
         </script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

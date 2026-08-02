@@ -126,18 +126,20 @@ const AppRouter = () => {
 
 function App() {
   return (
-    <div className="App dark">
+    {/* La classe de theme est posee sur <html> par la Navbar (voir Layout.jsx),
+        pas ici : le theme doit survivre aux pages sans Layout. */}
+    <div className="App">
       <AuthProvider>
         <BrowserRouter>
           <AppRouter />
         </BrowserRouter>
-        <Toaster 
-          position="top-right" 
+        <Toaster
+          position="top-right"
           toastOptions={{
             style: {
-              background: '#141414',
-              color: '#fff',
-              border: '1px solid #2A2A2A'
+              background: 'var(--bg-surface)',
+              color: 'var(--text-primary)',
+              border: '1px solid var(--border-color)'
             }
           }}
         />

@@ -97,15 +97,10 @@ JWT_EXPIRATION_HOURS = 24 * 7
 # Constants
 USD_TO_FCFA = 615  # Taux de conversion USD -> FCFA
 CNY_TO_FCFA = 85   # Taux de conversion CNY -> FCFA
-# Frais de service SilkRoute : pourcentage de la part membre, avec un plancher
-# pour les petites commandes. Jamais exposes tels quels dans l'API (fondus dans
-# le total). Ajustables via variables d'environnement sans redeployer.
-SERVICE_FEE_PERCENT = float(os.environ.get("SERVICE_FEE_PERCENT", 5))
-SERVICE_FEE_MIN_FCFA = float(os.environ.get("SERVICE_FEE_MIN_FCFA", 2000))
-
-def service_fee_fcfa(member_share_fcfa: float) -> float:
-    return max(SERVICE_FEE_MIN_FCFA, member_share_fcfa * SERVICE_FEE_PERCENT / 100)
-MIN_GROUPAGE_TOTAL_FCFA = 25000  # Total minimum (frais de service inclus) pour pouvoir rejoindre un groupage
+# Plus aucun frais de service n'est ajoute au prix du groupage : la marge
+# SilkRoute est desormais contenue dans le prix unitaire membre saisi a la
+# creation du groupage (ecart avec le prix de gros fournisseur, interne).
+MIN_GROUPAGE_TOTAL_FCFA = float(os.environ.get("MIN_GROUPAGE_TOTAL_FCFA", 25000))  # Total minimum pour pouvoir rejoindre un groupage
 # Frais fixes estimes pour une commande en solo (dedouanement, agent, minimum
 # transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
 SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
@@ -326,11 +321,22 @@ class GroupageCreate(BaseModel):
     transitaire_id: str  # ID du transitaire sélectionné
     shipping_option_id: Optional[str] = None  # Option de transport choisie (nouvelles fiches)
     
-    # Prix et poids/volume
+    # --- Prix en FCFA, saisis directement (mode recommande) ---
+    # Tous HORS TRANSPORT : le transport est calcule a part depuis la fiche
+    # transitaire (au kg ou au CBM) et ajoute au total.
+    #
+    # Prix unitaire de gros reellement obtenu du fournisseur. STRICTEMENT INTERNE :
+    # jamais expose par l'API publique. Sert a calculer la marge SilkRoute.
+    wholesale_unit_price_fcfa: Optional[float] = None
+    # Prix unitaire paye par les membres sur la plateforme. La marge SilkRoute est
+    # l'ecart avec wholesale_unit_price_fcfa : aucun frais de service n'est ajoute.
+    member_unit_price_fcfa: Optional[float] = None
+    # Prix unitaire qu'un acheteur seul paierait (petite quantite, sans palier de gros).
+    # Alimente la colonne "commande SEUL" du comparateur.
+    solo_unit_price_fcfa: Optional[float] = None
+
+    # --- Prix et poids/volume (ancien mode CNY, conserve pour compatibilite) ---
     unit_price_cny: float  # Prix unitaire DE GROS en CNY (palier atteint avec la quantite cible)
-    # Prix unitaire AU DETAIL (petite quantite) : celui qu'un acheteur seul paierait.
-    # C'est lui qui alimente la colonne "commande SEUL" du comparateur - c'est la
-    # que se materialise l'economie du prix de gros obtenu en groupant.
     solo_unit_price_cny: Optional[float] = None
     unit_weight_kg: float  # Poids unitaire en kg
     unit_volume_cbm: Optional[float] = None  # Volume unitaire en m3 (requis si option maritime au CBM)
@@ -377,6 +383,9 @@ class GroupageResponse(BaseModel):
     transitaire_name: str
     transitaire_location: str
     transitaire_license: str
+    # Prix directs en FCFA, hors transport (wholesale_unit_price_fcfa reste interne)
+    member_unit_price_fcfa: Optional[float] = None
+    solo_unit_price_fcfa: Optional[float] = None
     unit_price_cny: float
     unit_weight_kg: float
     transport_price_per_kg_fcfa: float
@@ -500,12 +509,33 @@ def get_per_item_transport_fcfa(groupage: dict) -> float:
         price = get_transport_price_per_kg_fcfa(groupage)
     return (groupage.get("unit_weight_kg") or 0) * price
 
-def calculate_solo_price(unit_price_cny: float, quantity: int, per_item_transport_fcfa: float) -> dict:
+def get_member_unit_price_fcfa(groupage: dict) -> float:
+    """Prix unitaire HORS TRANSPORT paye par un membre du groupage, en FCFA.
+
+    Mode direct (nouveaux groupages) : le prix est saisi tel quel a la creation.
+    Repli (groupages historiques) : on le derive du prix total tout compris en CNY.
+    """
+    direct = groupage.get("member_unit_price_fcfa")
+    if direct is not None:
+        return float(direct)
+    total_quantity = groupage.get("total_quantity") or 0
+    if total_quantity <= 0:
+        return 0.0
+    return (groupage.get("total_order_price_cny", 0) * CNY_TO_FCFA) / total_quantity
+
+def get_solo_unit_price_fcfa(groupage: dict) -> float:
+    """Prix unitaire HORS TRANSPORT paye par un acheteur seul (petite quantite), en FCFA."""
+    direct = groupage.get("solo_unit_price_fcfa")
+    if direct is not None:
+        return float(direct)
+    unit_price_cny = groupage.get("solo_unit_price_cny") or groupage.get("unit_price_cny") or 0
+    return unit_price_cny * CNY_TO_FCFA
+
+def calculate_solo_price(unit_price_fcfa: float, quantity: int, per_item_transport_fcfa: float) -> dict:
     """
     Calcul prix SEUL: Prix unitaire + frais fixes (SOLO_FEE_FCFA) + (transport unitaire × quantité)
-    Tout converti en FCFA
+    Le prix unitaire est attendu en FCFA, hors transport.
     """
-    unit_price_fcfa = unit_price_cny * CNY_TO_FCFA
     total_unit_price = unit_price_fcfa * quantity
 
     solo_fee_fcfa = SOLO_FEE_FCFA
@@ -525,45 +555,39 @@ def calculate_solo_price(unit_price_cny: float, quantity: int, per_item_transpor
         "price_per_unit_fcfa": round(price_per_unit_solo, 0)
     }
 
-def calculate_groupage_price(total_order_price_cny: float, total_quantity: int, member_quantity: int) -> dict:
+def calculate_groupage_price(member_unit_price_fcfa: float, per_item_transport_fcfa: float,
+                             total_quantity: int, member_quantity: int) -> dict:
     """
-    Calcul prix GROUPAGE: (Prix tout compris × % de votre part) + 5000 FCFA
+    Calcul prix GROUPAGE: (prix unitaire membre + transport unitaire) × quantite.
 
-    Un total minimum (MIN_GROUPAGE_TOTAL_FCFA, frais de service inclus) est requis
-    pour rejoindre un groupage : en dessous, les frais fixes representent une part
-    trop importante du prix et cassent l'interet du groupage.
+    Aucun frais de service n'est ajoute : la marge SilkRoute est deja contenue
+    dans le prix unitaire membre saisi a la creation du groupage.
+
+    Un total minimum (MIN_GROUPAGE_TOTAL_FCFA) reste requis pour rejoindre un
+    groupage : en dessous, la commande ne justifie pas les couts fixes de gestion.
     """
     if total_quantity <= 0:
         return {"error": "Invalid total quantity"}
-    
-    # Pourcentage de la commande
+
+    # Pourcentage de la commande represente par ce membre
     share_percentage = (member_quantity / total_quantity) * 100
-    
-    # Prix tout compris en FCFA
-    total_order_price_fcfa = total_order_price_cny * CNY_TO_FCFA
-    
-    # Prix unitaire (hors frais), utilise aussi pour estimer la quantite minimale
-    price_per_unit_excl_fee = total_order_price_fcfa / total_quantity if total_quantity > 0 else 0
-    
-    # Part du membre, frais de service SilkRoute inclus. Les frais ne sont
-    # volontairement PAS exposes comme ligne separee dans la reponse : ils sont
-    # fondus dans le total pour ne pas divulguer notre structure de prix.
-    member_share_fcfa = (share_percentage / 100) * total_order_price_fcfa
-    total_groupage = member_share_fcfa + service_fee_fcfa(member_share_fcfa)
-    price_per_unit_groupage = total_groupage / member_quantity if member_quantity > 0 else 0
+
+    # Prix unitaire tout compris pour le membre (marchandise + transport)
+    price_per_unit_groupage = member_unit_price_fcfa + per_item_transport_fcfa
+    subtotal_fcfa = member_unit_price_fcfa * member_quantity
+    transport_cost_fcfa = per_item_transport_fcfa * member_quantity
+    total_groupage = subtotal_fcfa + transport_cost_fcfa
 
     meets_minimum = total_groupage >= MIN_GROUPAGE_TOTAL_FCFA
     min_quantity_needed = None
-    if not meets_minimum and price_per_unit_excl_fee > 0:
-        # Part minimale pour que part + frais >= minimum, selon que le plancher
-        # ou le pourcentage s'applique au point de bascule.
-        share_needed = MIN_GROUPAGE_TOTAL_FCFA / (1 + SERVICE_FEE_PERCENT / 100)
-        if share_needed * SERVICE_FEE_PERCENT / 100 < SERVICE_FEE_MIN_FCFA:
-            share_needed = MIN_GROUPAGE_TOTAL_FCFA - SERVICE_FEE_MIN_FCFA
-        min_quantity_needed = math.ceil(share_needed / price_per_unit_excl_fee)
+    if not meets_minimum and price_per_unit_groupage > 0:
+        min_quantity_needed = math.ceil(MIN_GROUPAGE_TOTAL_FCFA / price_per_unit_groupage)
 
     return {
         "share_percentage": round(share_percentage, 2),
+        "unit_price_fcfa": round(member_unit_price_fcfa, 0),
+        "subtotal_fcfa": round(subtotal_fcfa, 0),
+        "transport_cost_fcfa": round(transport_cost_fcfa, 0),
         "total_fcfa": round(total_groupage, 0),
         "price_per_unit_fcfa": round(price_per_unit_groupage, 0),
         "quantity": member_quantity,
@@ -576,20 +600,23 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
     """
     Compare prix SEUL vs GROUPAGE vs Grossiste local
     """
+    per_item_transport_fcfa = get_per_item_transport_fcfa(groupage)
+
     # La colonne "seul" utilise le prix unitaire au detail (petite quantite) ;
-    # a defaut (anciens groupages), on retombe sur le prix de gros.
+    # a defaut (anciens groupages), on retombe sur le prix de gros converti du CNY.
     solo = calculate_solo_price(
-        groupage.get("solo_unit_price_cny") or groupage["unit_price_cny"],
+        get_solo_unit_price_fcfa(groupage),
         quantity,
-        get_per_item_transport_fcfa(groupage)
+        per_item_transport_fcfa
     )
-    
+
     groupage_price = calculate_groupage_price(
-        groupage["total_order_price_cny"],
+        get_member_unit_price_fcfa(groupage),
+        per_item_transport_fcfa,
         groupage["total_quantity"],
         quantity
     )
-    
+
     local_total = groupage["local_price_fcfa"] * quantity
     
     savings_vs_solo = solo["total_fcfa"] - groupage_price["total_fcfa"]
@@ -1254,7 +1281,7 @@ async def partner_groupages(user: dict = Depends(require_partner)):
     Le cout interne et la marge SilkRoute ne sont jamais visibles des partenaires."""
     groupages = await db.groupages.find(
         _partner_groupage_query(user),
-        {"_id": 0, "internal_cost_cny": 0, "supplier_documents": 0}
+        {"_id": 0, "internal_cost_cny": 0, "wholesale_unit_price_fcfa": 0, "supplier_documents": 0}
     ).sort("created_at", -1).to_list(200)
     return groupages
 
@@ -1461,27 +1488,28 @@ async def simulate_pricing(request: Request):
         raise HTTPException(status_code=400, detail="Invalid input values")
 
     # Calcul prix Solo
-    solo = calculate_solo_price(unit_price_cny, quantity, unit_weight_kg * transport_price_per_kg_fcfa)
+    solo = calculate_solo_price(
+        unit_price_cny * CNY_TO_FCFA,
+        quantity,
+        unit_weight_kg * transport_price_per_kg_fcfa
+    )
 
     # Estimation Groupage (simulation avec un groupe de 100 personnes)
     # Le prix groupé bénéficie de:
     # 1. Négociation volume sur le prix unitaire (-10%)
     # 2. Réduction transport groupé (-40%)
     estimated_group_size = 100
-    share_percentage = (quantity / estimated_group_size) * 100
 
-    # Prix négocié en gros (10% de réduction sur le prix unitaire)
-    negotiated_unit_price = unit_price_cny * 0.90
+    negotiated_unit_price_fcfa = unit_price_cny * 0.90 * CNY_TO_FCFA
+    discounted_transport_fcfa = unit_weight_kg * transport_price_per_kg_fcfa * 0.60
 
-    # Transport groupé (40% moins cher), reconverti en CNY pour rester homogene
-    # avec total_order_price_cny attendu par calculate_groupage_price
-    discounted_transport_cny = (transport_price_per_kg_fcfa * 0.60) / CNY_TO_FCFA
+    groupage = calculate_groupage_price(
+        negotiated_unit_price_fcfa,
+        discounted_transport_fcfa,
+        estimated_group_size,
+        quantity
+    )
 
-    # Prix total de la commande groupée
-    total_order_price_cny = (negotiated_unit_price * estimated_group_size) + (unit_weight_kg * estimated_group_size * discounted_transport_cny)
-    
-    groupage = calculate_groupage_price(total_order_price_cny, estimated_group_size, quantity)
-    
     savings_fcfa = solo["total_fcfa"] - groupage["total_fcfa"]
     savings_percentage = (savings_fcfa / solo["total_fcfa"]) * 100 if solo["total_fcfa"] > 0 else 0
     
@@ -1629,8 +1657,15 @@ async def get_cloudinary_signature(folder: str = "uploads", user: dict = Depends
 
 # Champs sensibles jamais exposes dans les reponses publiques de groupage :
 # les documents fournisseur revelent l'identite legale du fournisseur (risque de
-# contournement) et internal_cost_cny revele la marge SilkRoute.
-PUBLIC_GROUPAGE_PROJECTION = {"_id": 0, "supplier_documents": 0, "supplier_extra_documents": 0, "internal_cost_cny": 0}
+# contournement) ; internal_cost_cny et wholesale_unit_price_fcfa revelent la
+# marge SilkRoute.
+PUBLIC_GROUPAGE_PROJECTION = {
+    "_id": 0,
+    "supplier_documents": 0,
+    "supplier_extra_documents": 0,
+    "internal_cost_cny": 0,
+    "wholesale_unit_price_fcfa": 0,
+}
 
 @api_router.get("/groupages")
 async def list_groupages(status: Optional[str] = None, category_id: Optional[str] = None, featured: bool = False, limit: int = 20):
@@ -1725,7 +1760,8 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
     
     # Calculer le prix pour ce membre
     pricing = calculate_groupage_price(
-        groupage["total_order_price_cny"],
+        get_member_unit_price_fcfa(groupage),
+        get_per_item_transport_fcfa(groupage),
         groupage["total_quantity"],
         join_data.quantity
     )
@@ -2259,7 +2295,11 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         # Suivi d'expedition
         "shipment_status": "preparation",
         "shipment_timeline": [],
-        # Pricing
+        # Pricing direct en FCFA (hors transport)
+        "wholesale_unit_price_fcfa": groupage_data.wholesale_unit_price_fcfa,
+        "member_unit_price_fcfa": groupage_data.member_unit_price_fcfa,
+        "solo_unit_price_fcfa": groupage_data.solo_unit_price_fcfa,
+        # Pricing historique en CNY (repli)
         "unit_price_cny": groupage_data.unit_price_cny,
         "solo_unit_price_cny": groupage_data.solo_unit_price_cny,
         "unit_weight_kg": groupage_data.unit_weight_kg,
@@ -2303,6 +2343,7 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
     data = await request.json()
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
                       "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
+                      "wholesale_unit_price_fcfa", "member_unit_price_fcfa", "solo_unit_price_fcfa",
                       "unit_price_cny", "solo_unit_price_cny", "unit_weight_kg", "unit_volume_cbm",
                       "total_quantity", "total_order_price_cny", "internal_cost_cny",
                       "min_members", "max_members",

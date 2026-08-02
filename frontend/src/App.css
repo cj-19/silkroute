@@ -346,11 +346,11 @@ h1, h2, h3, h4, h5, h6, .heading {
 }
 
 /* ========================================================================
-   MODE CLAIR
-   Le theme sombre est celui par defaut. La classe `light` sur <html>
-   (a) redefinit les variables du design system, et (b) surcharge les
-   classes Tailwind arbitraires codees en dur dans les pages, pour ne pas
-   avoir a reecrire chaque composant.
+   MODE CLAIR — theme par defaut
+   Les variables de :root restent la palette sombre (mode `dark`). La classe
+   `light` sur <html> (a) redefinit les variables du design system, et (b)
+   surcharge les classes Tailwind arbitraires codees en dur dans les pages,
+   pour ne pas avoir a reecrire chaque composant.
    Les elements marques [data-theme-fixed] (ex: hero avec image sombre)
    conservent leur rendu sombre dans les deux modes.
    ======================================================================== */
@@ -418,6 +418,88 @@ html.light .App::before { opacity: 0.015; }
 @media (max-width: 768px) {
   html.light .mobile-nav {
     background: rgba(246, 245, 241, 0.95);
+    border-top: 1px solid var(--border-color);
+  }
+}
+
+/* ========================================================================
+   MODE WHATSAPP
+   Meme mecanique que le mode clair, avec la palette de WhatsApp : fond
+   beige, cartes blanches, vert teal a la place de l'or. Difference notable
+   avec le mode clair : les boutons d'accent passent en vert avec un texte
+   BLANC (l'or utilisait un texte sombre).
+   ======================================================================== */
+html.whatsapp {
+  --bg-primary: #EFEAE2;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #F0F2F5;
+  --border-color: #D1D7DB;
+  --text-primary: #111B21;
+  --text-secondary: #667781;
+  --text-muted: #8696A0;
+  --accent-gold: #008069;
+  --accent-gold-hover: #017561;
+  --accent-gold-muted: rgba(0, 128, 105, 0.12);
+}
+
+/* Fonds */
+html.whatsapp .bg-\[\#0A0A0A\]:not([data-theme-fixed] *) { background-color: var(--bg-primary); }
+html.whatsapp .bg-\[\#141414\]:not([data-theme-fixed] *) { background-color: var(--bg-surface); }
+html.whatsapp .bg-\[\#1A1A1A\]:not([data-theme-fixed] *) { background-color: var(--bg-elevated); }
+html.whatsapp .bg-\[\#2A2A2A\]:not([data-theme-fixed] *) { background-color: #E9EDEF; }
+html.whatsapp .hover\:bg-\[\#1A1A1A\]:hover:not([data-theme-fixed] *) { background-color: var(--bg-elevated); }
+html.whatsapp .hover\:bg-\[\#2A2A2A\]:hover:not([data-theme-fixed] *) { background-color: #E9EDEF; }
+
+/* Bordures */
+html.whatsapp .border-\[\#2A2A2A\]:not([data-theme-fixed] *) { border-color: var(--border-color); }
+html.whatsapp .border-\[\#71717A\]:not([data-theme-fixed] *) { border-color: #8696A0; }
+html.whatsapp .border-\[\#A1A1AA\]:not([data-theme-fixed] *) { border-color: #D1D7DB; }
+html.whatsapp .hover\:border-\[\#71717A\]:hover:not([data-theme-fixed] *) { border-color: #8696A0; }
+
+/* Textes */
+html.whatsapp .text-white:not([data-theme-fixed] *) { color: var(--text-primary); }
+html.whatsapp .hover\:text-white:hover:not([data-theme-fixed] *) { color: var(--text-primary); }
+html.whatsapp .text-\[\#A1A1AA\]:not([data-theme-fixed] *) { color: var(--text-secondary); }
+html.whatsapp .text-\[\#71717A\]:not([data-theme-fixed] *) { color: var(--text-muted); }
+html.whatsapp .text-\[\#2A2A2A\]:not([data-theme-fixed] *) { color: #D1D7DB; }
+
+/* Accent : le vert WhatsApp remplace l'or partout */
+html.whatsapp .text-\[\#D4AF37\]:not([data-theme-fixed] *) { color: var(--accent-gold); }
+html.whatsapp .text-\[\#B3922E\]:not([data-theme-fixed] *) { color: var(--accent-gold-hover); }
+html.whatsapp .hover\:text-\[\#D4AF37\]:hover:not([data-theme-fixed] *) { color: var(--accent-gold); }
+html.whatsapp .hover\:text-\[\#B3922E\]:hover:not([data-theme-fixed] *) { color: var(--accent-gold-hover); }
+html.whatsapp .border-\[\#D4AF37\]:not([data-theme-fixed] *) { border-color: var(--accent-gold); }
+html.whatsapp .hover\:border-\[\#D4AF37\]:hover:not([data-theme-fixed] *) { border-color: var(--accent-gold); }
+html.whatsapp .bg-\[\#D4AF37\]:not([data-theme-fixed] *) { background-color: var(--accent-gold); }
+/* Sur fond vert, le texte prevu sombre doit passer en blanc */
+html.whatsapp .bg-\[\#D4AF37\] .text-\[\#0A0A0A\],
+html.whatsapp .bg-\[\#D4AF37\].text-\[\#0A0A0A\] { color: #FFFFFF; }
+html.whatsapp .text-\[\#0A0A0A\]:not([data-theme-fixed] *) { color: var(--text-primary); }
+
+/* Vert de succes : on prend le vert vif de WhatsApp */
+html.whatsapp .text-\[\#22C55E\]:not([data-theme-fixed] *) { color: #1FA855; }
+html.whatsapp .bg-\[\#22C55E\]:not([data-theme-fixed] *) { background-color: #25D366; }
+
+/* Le bouton d'accent global : blanc sur vert */
+html.whatsapp .btn-gold { background: var(--accent-gold); color: #FFFFFF; }
+html.whatsapp .btn-gold:hover { background: var(--accent-gold-hover); }
+
+/* Composants custom */
+html.whatsapp .glass {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+html.whatsapp .input-dark {
+  background: var(--bg-surface);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+html.whatsapp .table-dark tr:hover td { background: rgba(0, 0, 0, 0.02); }
+html.whatsapp ::-webkit-scrollbar-thumb:hover { background: #BFC7CB; }
+html.whatsapp .App::before { opacity: 0.02; }
+
+@media (max-width: 768px) {
+  html.whatsapp .mobile-nav {
+    background: rgba(240, 242, 245, 0.97);
     border-top: 1px solid var(--border-color);
   }
 }

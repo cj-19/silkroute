@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
 import { Layout } from '@/components/Layout';
+import QuantityInput from '@/components/QuantityInput';
 import {
   Package, Clock, Users, MapPin, Star, Shield, FileText,
   MessageCircle, Send, Loader2, CheckCircle, AlertCircle,
@@ -372,15 +373,20 @@ const GroupageDetailPage = () => {
                     <label className="block text-sm text-[#A1A1AA] mb-2">
                       {i18n.language === 'fr' ? 'Quantité souhaitée' : 'Desired quantity'}
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max={remainingQuantity}
+                    <QuantityInput
                       value={quantity}
-                      onChange={(e) => setQuantity(Math.max(1, Math.min(remainingQuantity, parseInt(e.target.value) || 1)))}
-                      className="input-dark w-full px-4 py-2 rounded-md"
+                      onChange={setQuantity}
+                      min={1}
+                      max={remainingQuantity}
+                      inputClassName="flex-1 min-w-0"
+                      className="w-full"
                       data-testid="quantity-input"
                     />
+                    <p className="text-[11px] text-[#71717A] mt-1">
+                      {i18n.language === 'fr'
+                        ? `${remainingQuantity} unité${remainingQuantity > 1 ? 's' : ''} encore disponible${remainingQuantity > 1 ? 's' : ''}`
+                        : `${remainingQuantity} unit${remainingQuantity > 1 ? 's' : ''} still available`}
+                    </p>
                   </div>
                   
                   {pricing && (
@@ -565,17 +571,17 @@ const GroupageDetailPage = () => {
                       <Scale className="w-4 h-4 inline mr-2" />
                       {i18n.language === 'fr' ? 'Simuler pour une quantité de:' : 'Simulate for quantity:'}
                     </label>
-                    <input
-                      type="number"
-                      min="1"
-                      max={groupage.total_quantity}
-                      value={quantity}
-                      onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
-                      className="input-dark w-32 px-4 py-2 rounded-md"
-                    />
-                    <span className="ml-2 text-[#71717A]">
-                      {i18n.language === 'fr' ? 'unités' : 'units'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <QuantityInput
+                        value={quantity}
+                        onChange={setQuantity}
+                        min={1}
+                        max={groupage.total_quantity}
+                      />
+                      <span className="text-[#71717A]">
+                        {i18n.language === 'fr' ? 'unités' : 'units'}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Price Comparison Cards */}

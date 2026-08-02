@@ -2,7 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
-import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield, Sun, Moon } from 'lucide-react';
+import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield, Sun, Moon, MessageCircle } from 'lucide-react';
+
+// Ordre de rotation du bouton de theme. La classe correspondante est posee sur
+// <html> ; 'light' n'a pas de surcharge dediee dans App.css au-dela de html.light.
+const THEMES = ['light', 'dark', 'whatsapp'];
+const THEME_LABELS = { light: 'Mode clair', dark: 'Mode sombre', whatsapp: 'Mode WhatsApp' };
+const THEME_ICONS = { light: Sun, dark: Moon, whatsapp: MessageCircle };
 
 export const Navbar = () => {
   const { t, i18n } = useTranslation();
@@ -10,16 +16,24 @@ export const Navbar = () => {
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Theme clair/sombre : persiste dans localStorage, applique via la classe
-  // `light` sur <html> (voir App.css). Sombre par defaut.
-  const [theme, setTheme] = useState(() => localStorage.getItem('silkroute_theme') || 'dark');
+  // Themes : persistes dans localStorage, appliques via une classe sur <html>
+  // (voir App.css). CLAIR par defaut. Le bouton fait tourner les trois themes.
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('silkroute_theme');
+    return THEMES.includes(saved) ? saved : 'light';
+  });
 
   useEffect(() => {
-    document.documentElement.classList.toggle('light', theme === 'light');
+    const root = document.documentElement;
+    THEMES.forEach(t => root.classList.toggle(t, t === theme));
+    // `dark` pilote les composants shadcn (tailwind darkMode: ["class"]) : sans
+    // cela, dialogues et menus resteraient sombres sur un theme clair.
+    root.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('silkroute_theme', theme);
   }, [theme]);
 
-  const toggleTheme = () => setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+  const cycleTheme = () => setTheme(prev => THEMES[(THEMES.indexOf(prev) + 1) % THEMES.length]);
+  const nextThemeLabel = THEME_LABELS[THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]];
 
   // Get clean language code (fr or en)
   const currentLang = i18n.language?.substring(0, 2).toLowerCase() || 'fr';
@@ -87,17 +101,16 @@ export const Navbar = () => {
 
           {/* Right Side */}
           <div className="flex items-center gap-4">
-            {/* Theme Toggle — min 44px de cote pour respecter les zones tactiles mobiles */}
+            {/* Theme Toggle — min 44px de cote pour respecter les zones tactiles mobiles.
+                L'icone montre le theme ACTUEL ; l'infobulle annonce le suivant. */}
             <button
-              onClick={toggleTheme}
+              onClick={cycleTheme}
               className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
-              title={theme === 'dark' ? 'Mode clair' : 'Mode sombre'}
-              aria-label={theme === 'dark' ? 'Passer en mode clair' : 'Passer en mode sombre'}
+              title={`${THEME_LABELS[theme]} — cliquer pour : ${nextThemeLabel}`}
+              aria-label={`Thème actuel : ${THEME_LABELS[theme]}. Passer au ${nextThemeLabel}.`}
               data-testid="theme-toggle"
             >
-              {theme === 'dark'
-                ? <Sun className="w-4 h-4 text-[#A1A1AA]" />
-                : <Moon className="w-4 h-4 text-[#A1A1AA]" />}
+              {React.createElement(THEME_ICONS[theme], { className: 'w-4 h-4 text-[#A1A1AA]' })}
             </button>
 
             {/* Language Toggle */}

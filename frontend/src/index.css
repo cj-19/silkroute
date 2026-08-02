@@ -9,8 +9,11 @@ body {
     font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #0A0A0A;
-    color: #FFFFFF;
+    /* Suit le theme actif : les variables sont redefinies par html.light /
+       html.whatsapp dans App.css. Sans cela, le fond de page resterait noir
+       en thème clair sur les zones non couvertes par une page. */
+    background-color: var(--bg-primary, #0A0A0A);
+    color: var(--text-primary, #FFFFFF);
 }
 
 code {
