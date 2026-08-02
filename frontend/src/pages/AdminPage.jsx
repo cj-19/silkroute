@@ -491,6 +491,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     wholesale_unit_price_fcfa: '',
     member_unit_price_fcfa: '',
     solo_unit_price_fcfa: '',
+    service_fee_percent: '',
     unit_price_cny: 100,
     solo_unit_price_cny: '',
     unit_weight_kg: 0.5,
@@ -659,6 +660,10 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         wholesale_unit_price_fcfa: parseFloat(formData.wholesale_unit_price_fcfa) || null,
         member_unit_price_fcfa: parseFloat(formData.member_unit_price_fcfa) || null,
         solo_unit_price_fcfa: parseFloat(formData.solo_unit_price_fcfa) || null,
+        // '' et 0 sont distincts : vide = defaut serveur, 0 = aucun frais
+        service_fee_percent: formData.service_fee_percent === ''
+          ? null
+          : parseFloat(formData.service_fee_percent),
         unit_price_cny: parseFloat(formData.unit_price_cny),
         solo_unit_price_cny: parseFloat(formData.solo_unit_price_cny) || null,
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
@@ -1031,20 +1036,61 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
               </div>
             </div>
 
+            {/* Frais de service preleves en plus, propres a ce groupage. */}
+            <div className="grid md:grid-cols-2 gap-4 pt-1">
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Frais de service (%)' : 'Service fee (%)'}
+                  <span className="ml-2 text-[10px] text-[#F97316]">
+                    {i18n.language === 'fr' ? 'INTERNE' : 'INTERNAL'}
+                  </span>
+                </label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="20"
+                  value={formData.service_fee_percent}
+                  onChange={(e) => setFormData({...formData, service_fee_percent: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Vide = 5 % par défaut' : 'Blank = 5% default'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  data-testid="service-fee-input"
+                />
+                <p className="text-[10px] text-[#71717A] mt-1">
+                  {i18n.language === 'fr'
+                    ? 'Maximum 20 %. Prélevés sur la part du membre (marchandise + transport), fondus dans le total : l\'acheteur ne les voit pas comme une ligne séparée. Saisir 0 pour ne rien prélever.'
+                    : 'Max 20%. Charged on the member share (goods + shipping) and blended into the total: buyers never see it as a separate line. Enter 0 for no fee.'}
+                </p>
+              </div>
+            </div>
+
             {/* Marge calculee en direct : uniquement visible ici, dans l'admin. */}
             {formData.wholesale_unit_price_fcfa && formData.member_unit_price_fcfa && (
               (() => {
                 const gros = parseFloat(formData.wholesale_unit_price_fcfa);
                 const membre = parseFloat(formData.member_unit_price_fcfa);
                 if (!(gros > 0) || !(membre > 0)) return null;
-                const marge = membre - gros;
-                const pct = (marge / gros) * 100;
+                const margeProduit = membre - gros;
+                const pct = (margeProduit / gros) * 100;
+                // Les frais s'appliquent aussi au transport, absent d'ici : on
+                // n'annonce donc que leur part sur la marchandise.
+                const tauxFrais = formData.service_fee_percent === ''
+                  ? 5
+                  : parseFloat(formData.service_fee_percent) || 0;
+                const fraisSurProduit = membre * tauxFrais / 100;
                 const fmt = (n) => new Intl.NumberFormat('fr-FR').format(Math.round(n));
                 return (
-                  <div className={`text-sm rounded-md px-3 py-2 ${marge >= 0 ? 'bg-[#22C55E]/10 text-[#22C55E]' : 'bg-[#EF4444]/10 text-[#EF4444]'}`}>
+                  <div className={`text-sm rounded-md px-3 py-2 ${margeProduit >= 0 ? 'bg-[#22C55E]/10 text-[#22C55E]' : 'bg-[#EF4444]/10 text-[#EF4444]'}`}>
                     {i18n.language === 'fr' ? 'Marge par unité' : 'Margin per unit'}
-                    {' : '}<strong>{fmt(marge)} FCFA</strong> ({pct.toFixed(1)} %)
-                    {marge < 0 && (
+                    {' : '}<strong>{fmt(margeProduit)} FCFA</strong> ({pct.toFixed(1)} %)
+                    {tauxFrais > 0 && (
+                      <span className="block text-[11px] mt-1 opacity-90">
+                        {i18n.language === 'fr'
+                          ? `+ ${fmt(fraisSurProduit)} FCFA de frais de service (${tauxFrais} %), soit ${fmt(margeProduit + fraisSurProduit)} FCFA au total — hors frais sur le transport.`
+                          : `+ ${fmt(fraisSurProduit)} FCFA service fee (${tauxFrais}%), i.e. ${fmt(margeProduit + fraisSurProduit)} FCFA total — excluding fee on shipping.`}
+                      </span>
+                    )}
+                    {margeProduit < 0 && (
                       <span className="block text-[11px] mt-1">
                         {i18n.language === 'fr'
                           ? 'Vous vendez en dessous de votre prix d\'achat.'
@@ -2418,6 +2464,9 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
     wholesale_unit_price_fcfa: '',
     member_unit_price_fcfa: groupage.member_unit_price_fcfa ?? '',
     solo_unit_price_fcfa: groupage.solo_unit_price_fcfa ?? '',
+    // Comme le prix de gros, le taux de frais n'est pas renvoye par l'API.
+    // Laisse vide, il n'est pas envoye et la valeur en base reste inchangee.
+    service_fee_percent: '',
     suggested_resale_price_fcfa: groupage.suggested_resale_price_fcfa ?? ''
   });
 
@@ -2484,8 +2533,9 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
       local_price_fcfa: parseFloat(form.local_price_fcfa) || 0,
       member_unit_price_fcfa: form.member_unit_price_fcfa === '' ? null : parseFloat(form.member_unit_price_fcfa),
       solo_unit_price_fcfa: form.solo_unit_price_fcfa === '' ? null : parseFloat(form.solo_unit_price_fcfa),
-      // Laisse vide = on n'y touche pas (le prix de gros n'est jamais relu depuis l'API)
+      // Laisse vide = on n'y touche pas (ces champs internes ne sont jamais relus depuis l'API)
       ...(form.wholesale_unit_price_fcfa ? { wholesale_unit_price_fcfa: parseFloat(form.wholesale_unit_price_fcfa) } : {}),
+      ...(form.service_fee_percent !== '' ? { service_fee_percent: parseFloat(form.service_fee_percent) } : {}),
       suggested_resale_price_fcfa: form.suggested_resale_price_fcfa === '' ? null : parseFloat(form.suggested_resale_price_fcfa)
     };
     if (form.deadline) payload.deadline = new Date(form.deadline).toISOString();
@@ -2706,6 +2756,16 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
               <input type="number" value={form.wholesale_unit_price_fcfa}
                 onChange={(e) => set({ wholesale_unit_price_fcfa: e.target.value })}
                 placeholder={fr ? 'Laisser vide = inchangé' : 'Leave blank = unchanged'}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {fr ? 'Frais de service (%)' : 'Service fee (%)'}
+                <span className="ml-2 text-[10px] text-[#F97316]">{fr ? 'INTERNE' : 'INTERNAL'}</span>
+              </label>
+              <input type="number" step="0.5" min="0" max="20" value={form.service_fee_percent}
+                onChange={(e) => set({ service_fee_percent: e.target.value })}
+                placeholder={fr ? 'Laisser vide = inchangé (max 20)' : 'Leave blank = unchanged (max 20)'}
                 className="input-dark w-full px-4 py-2 rounded-md" />
             </div>
             <div>

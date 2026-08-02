@@ -97,10 +97,33 @@ JWT_EXPIRATION_HOURS = 24 * 7
 # Constants
 USD_TO_FCFA = 615  # Taux de conversion USD -> FCFA
 CNY_TO_FCFA = 85   # Taux de conversion CNY -> FCFA
-# Plus aucun frais de service n'est ajoute au prix du groupage : la marge
-# SilkRoute est desormais contenue dans le prix unitaire membre saisi a la
-# creation du groupage (ecart avec le prix de gros fournisseur, interne).
-MIN_GROUPAGE_TOTAL_FCFA = float(os.environ.get("MIN_GROUPAGE_TOTAL_FCFA", 25000))  # Total minimum pour pouvoir rejoindre un groupage
+# Frais de service SilkRoute : pourcentage de la part membre (marchandise +
+# transport), avec un plancher pour les petites commandes. Le pourcentage est
+# reglable PAR GROUPAGE (champ service_fee_percent), dans la limite de
+# MAX_SERVICE_FEE_PERCENT ; a defaut, SERVICE_FEE_PERCENT s'applique.
+# Jamais exposes tels quels dans l'API : fondus dans le total, pour ne pas
+# divulguer notre structure de prix.
+SERVICE_FEE_PERCENT = float(os.environ.get("SERVICE_FEE_PERCENT", 5))
+SERVICE_FEE_MIN_FCFA = float(os.environ.get("SERVICE_FEE_MIN_FCFA", 2000))
+MAX_SERVICE_FEE_PERCENT = float(os.environ.get("MAX_SERVICE_FEE_PERCENT", 20))
+
+def get_service_fee_percent(groupage: dict) -> float:
+    """Pourcentage de frais applique a ce groupage, borne a [0, MAX_SERVICE_FEE_PERCENT]."""
+    percent = groupage.get("service_fee_percent")
+    if percent is None:
+        percent = SERVICE_FEE_PERCENT
+    return max(0.0, min(MAX_SERVICE_FEE_PERCENT, float(percent)))
+
+def service_fee_fcfa(member_share_fcfa: float, percent: float = None) -> float:
+    """Frais de service en FCFA. Un plancher evite que les toutes petites
+    commandes ne rapportent rien ; a 0 % il n'y a aucun frais."""
+    if percent is None:
+        percent = SERVICE_FEE_PERCENT
+    if percent <= 0:
+        return 0.0
+    return max(SERVICE_FEE_MIN_FCFA, member_share_fcfa * percent / 100)
+
+MIN_GROUPAGE_TOTAL_FCFA = float(os.environ.get("MIN_GROUPAGE_TOTAL_FCFA", 25000))  # Total minimum (frais inclus) pour pouvoir rejoindre un groupage
 # Frais fixes estimes pour une commande en solo (dedouanement, agent, minimum
 # transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
 SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
@@ -335,6 +358,11 @@ class GroupageCreate(BaseModel):
     # Alimente la colonne "commande SEUL" du comparateur.
     solo_unit_price_fcfa: Optional[float] = None
 
+    # Frais de service SilkRoute pour CE groupage, en % de la part membre
+    # (marchandise + transport). Vide = valeur par defaut du serveur.
+    # Jamais expose par l'API publique : il revelerait notre structure de prix.
+    service_fee_percent: Optional[float] = Field(default=None, ge=0, le=MAX_SERVICE_FEE_PERCENT)
+
     # --- Prix et poids/volume (ancien mode CNY, conserve pour compatibilite) ---
     unit_price_cny: float  # Prix unitaire DE GROS en CNY (palier atteint avec la quantite cible)
     solo_unit_price_cny: Optional[float] = None
@@ -556,32 +584,50 @@ def calculate_solo_price(unit_price_fcfa: float, quantity: int, per_item_transpo
     }
 
 def calculate_groupage_price(member_unit_price_fcfa: float, per_item_transport_fcfa: float,
-                             total_quantity: int, member_quantity: int) -> dict:
+                             total_quantity: int, member_quantity: int,
+                             service_fee_percent: float = None) -> dict:
     """
-    Calcul prix GROUPAGE: (prix unitaire membre + transport unitaire) × quantite.
+    Calcul prix GROUPAGE: (prix unitaire membre + transport unitaire) × quantite,
+    plus les frais de service SilkRoute (pourcentage propre au groupage).
 
-    Aucun frais de service n'est ajoute : la marge SilkRoute est deja contenue
-    dans le prix unitaire membre saisi a la creation du groupage.
+    Les frais ne sont volontairement PAS exposes comme ligne separee : ils sont
+    fondus dans total_fcfa pour ne pas divulguer notre structure de prix.
 
-    Un total minimum (MIN_GROUPAGE_TOTAL_FCFA) reste requis pour rejoindre un
-    groupage : en dessous, la commande ne justifie pas les couts fixes de gestion.
+    Un total minimum (MIN_GROUPAGE_TOTAL_FCFA, frais inclus) reste requis pour
+    rejoindre un groupage : en dessous, la commande ne justifie pas les couts
+    fixes de gestion.
     """
     if total_quantity <= 0:
         return {"error": "Invalid total quantity"}
 
+    if service_fee_percent is None:
+        service_fee_percent = SERVICE_FEE_PERCENT
+    service_fee_percent = max(0.0, min(MAX_SERVICE_FEE_PERCENT, float(service_fee_percent)))
+
     # Pourcentage de la commande represente par ce membre
     share_percentage = (member_quantity / total_quantity) * 100
 
-    # Prix unitaire tout compris pour le membre (marchandise + transport)
-    price_per_unit_groupage = member_unit_price_fcfa + per_item_transport_fcfa
     subtotal_fcfa = member_unit_price_fcfa * member_quantity
     transport_cost_fcfa = per_item_transport_fcfa * member_quantity
-    total_groupage = subtotal_fcfa + transport_cost_fcfa
+    member_share_fcfa = subtotal_fcfa + transport_cost_fcfa
+    total_groupage = member_share_fcfa + service_fee_fcfa(member_share_fcfa, service_fee_percent)
+    price_per_unit_groupage = total_groupage / member_quantity if member_quantity > 0 else 0
+
+    # Part unitaire hors frais, pour estimer la quantite minimale
+    price_per_unit_excl_fee = member_unit_price_fcfa + per_item_transport_fcfa
 
     meets_minimum = total_groupage >= MIN_GROUPAGE_TOTAL_FCFA
     min_quantity_needed = None
-    if not meets_minimum and price_per_unit_groupage > 0:
-        min_quantity_needed = math.ceil(MIN_GROUPAGE_TOTAL_FCFA / price_per_unit_groupage)
+    if not meets_minimum and price_per_unit_excl_fee > 0:
+        # Part minimale pour que part + frais >= minimum, selon que le plancher
+        # ou le pourcentage s'applique au point de bascule.
+        if service_fee_percent <= 0:
+            share_needed = MIN_GROUPAGE_TOTAL_FCFA
+        else:
+            share_needed = MIN_GROUPAGE_TOTAL_FCFA / (1 + service_fee_percent / 100)
+            if share_needed * service_fee_percent / 100 < SERVICE_FEE_MIN_FCFA:
+                share_needed = MIN_GROUPAGE_TOTAL_FCFA - SERVICE_FEE_MIN_FCFA
+        min_quantity_needed = max(1, math.ceil(share_needed / price_per_unit_excl_fee))
 
     return {
         "share_percentage": round(share_percentage, 2),
@@ -614,7 +660,8 @@ def calculate_comparison(groupage: dict, quantity: int) -> dict:
         get_member_unit_price_fcfa(groupage),
         per_item_transport_fcfa,
         groupage["total_quantity"],
-        quantity
+        quantity,
+        get_service_fee_percent(groupage)
     )
 
     local_total = groupage["local_price_fcfa"] * quantity
@@ -1281,7 +1328,8 @@ async def partner_groupages(user: dict = Depends(require_partner)):
     Le cout interne et la marge SilkRoute ne sont jamais visibles des partenaires."""
     groupages = await db.groupages.find(
         _partner_groupage_query(user),
-        {"_id": 0, "internal_cost_cny": 0, "wholesale_unit_price_fcfa": 0, "supplier_documents": 0}
+        {"_id": 0, "internal_cost_cny": 0, "wholesale_unit_price_fcfa": 0,
+         "service_fee_percent": 0, "supplier_documents": 0}
     ).sort("created_at", -1).to_list(200)
     return groupages
 
@@ -1665,6 +1713,7 @@ PUBLIC_GROUPAGE_PROJECTION = {
     "supplier_extra_documents": 0,
     "internal_cost_cny": 0,
     "wholesale_unit_price_fcfa": 0,
+    "service_fee_percent": 0,
 }
 
 @api_router.get("/groupages")
@@ -1763,7 +1812,8 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
         get_member_unit_price_fcfa(groupage),
         get_per_item_transport_fcfa(groupage),
         groupage["total_quantity"],
-        join_data.quantity
+        join_data.quantity,
+        get_service_fee_percent(groupage)
     )
     
     if not pricing.get("meets_minimum", True):
@@ -2299,6 +2349,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "wholesale_unit_price_fcfa": groupage_data.wholesale_unit_price_fcfa,
         "member_unit_price_fcfa": groupage_data.member_unit_price_fcfa,
         "solo_unit_price_fcfa": groupage_data.solo_unit_price_fcfa,
+        "service_fee_percent": groupage_data.service_fee_percent,
         # Pricing historique en CNY (repli)
         "unit_price_cny": groupage_data.unit_price_cny,
         "solo_unit_price_cny": groupage_data.solo_unit_price_cny,
@@ -2344,6 +2395,7 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
                       "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
                       "wholesale_unit_price_fcfa", "member_unit_price_fcfa", "solo_unit_price_fcfa",
+                      "service_fee_percent",
                       "unit_price_cny", "solo_unit_price_cny", "unit_weight_kg", "unit_volume_cbm",
                       "total_quantity", "total_order_price_cny", "internal_cost_cny",
                       "min_members", "max_members",
@@ -2352,6 +2404,20 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
 
     if "transitaire_status" in update_data and update_data["transitaire_status"] not in ("recommended", "confirmed"):
         raise HTTPException(status_code=400, detail="transitaire_status must be 'recommended' or 'confirmed'")
+
+    # Cette route ne passe pas par un modele Pydantic : la borne des frais de
+    # service doit donc etre verifiee explicitement ici.
+    if update_data.get("service_fee_percent") is not None:
+        try:
+            percent = float(update_data["service_fee_percent"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="service_fee_percent must be a number")
+        if not (0 <= percent <= MAX_SERVICE_FEE_PERCENT):
+            raise HTTPException(
+                status_code=400,
+                detail=f"service_fee_percent must be between 0 and {MAX_SERVICE_FEE_PERCENT}"
+            )
+        update_data["service_fee_percent"] = percent
 
     # La quantite cible ne peut pas descendre sous ce qui est deja reserve
     if "total_quantity" in update_data:
