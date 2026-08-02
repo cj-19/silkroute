@@ -125,9 +125,9 @@ const AppRouter = () => {
 };
 
 function App() {
+  // La classe de theme est posee sur <html> par la Navbar (voir Layout.jsx),
+  // pas ici : le theme doit survivre aux pages sans Layout.
   return (
-    {/* La classe de theme est posee sur <html> par la Navbar (voir Layout.jsx),
-        pas ici : le theme doit survivre aux pages sans Layout. */}
     <div className="App">
       <AuthProvider>
         <BrowserRouter>
