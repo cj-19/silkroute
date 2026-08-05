@@ -7,7 +7,7 @@ import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
   Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin,
-  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle
+  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle, Wallet
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
@@ -27,6 +27,7 @@ const AdminPage = () => {
     { path: '/admin/warnings', label: t('admin.warnings'), icon: AlertTriangle },
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
     { path: '/admin/tracking', label: i18n.language === 'fr' ? 'Suivi & documents' : 'Tracking & documents', icon: Truck },
+    { path: '/admin/treasury', label: i18n.language === 'fr' ? 'Trésorerie' : 'Treasury', icon: Wallet },
     { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
     { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield },
     { path: '/admin/users', label: i18n.language === 'fr' ? 'Utilisateurs' : 'Users', icon: Users },
@@ -69,6 +70,7 @@ const AdminPage = () => {
               <Route path="warnings" element={<AdminWarnings />} />
               <Route path="groupages" element={<AdminGroupages />} />
               <Route path="tracking" element={<AdminTracking />} />
+              <Route path="treasury" element={<AdminTreasury />} />
               <Route path="proposals" element={<AdminProposals />} />
               <Route path="kyc" element={<AdminKYC />} />
               <Route path="users" element={<AdminUsers />} />
@@ -138,6 +140,566 @@ const AdminOverview = () => {
           icon={LayoutDashboard}
         />
       </div>
+    </div>
+  );
+};
+
+// ============================================================
+// TRESORERIE
+// ============================================================
+const FCFA = (n) => new Intl.NumberFormat('fr-FR').format(Math.round(n || 0)) + ' FCFA';
+
+const FLOW_ACCOUNTS = ['tara', 'reasy', 'stripe', 'cash', 'bank', 'other'];
+const ACCOUNT_LABELS = {
+  tara: 'Tara Money', reasy: 'REasy', stripe: 'Stripe',
+  cash: 'Espèces', bank: 'Banque', other: 'Autre'
+};
+const FLOW_CATEGORIES = [
+  'member_payment', 'refund', 'supplier_payment', 'freight_payment',
+  'customs_duty', 'operating_expense', 'other_income'
+];
+const CATEGORY_LABELS = {
+  member_payment: 'Paiement membre', refund: 'Remboursement',
+  supplier_payment: 'Paiement fournisseur', freight_payment: 'Paiement transitaire',
+  customs_duty: 'Douane', operating_expense: 'Frais de fonctionnement',
+  other_income: 'Autre entrée'
+};
+// Categories qui sont, par nature, des entrees d'argent
+const INCOMING_CATEGORIES = ['member_payment', 'other_income'];
+
+const AdminTreasury = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [vue, setVue] = useState('flux'); // flux | groupages | membres
+  const [data, setData] = useState({ flows: [], summary: {} });
+  const [summary, setSummary] = useState(null);
+  const [parGroupage, setParGroupage] = useState([]);
+  const [parMembre, setParMembre] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [filtres, setFiltres] = useState({
+    direction: '', account: '', category: '', groupage_id: '', date_from: '', date_to: ''
+  });
+
+  const chargerFlux = async () => {
+    const params = new URLSearchParams(
+      Object.entries(filtres).filter(([, v]) => v)
+    ).toString();
+    try {
+      const res = await api.get(`/admin/cash-flows${params ? `?${params}` : ''}`);
+      setData(res.data);
+    } catch (e) {
+      toast.error(fr ? 'Chargement des flux impossible' : 'Failed to load flows');
+    }
+  };
+
+  const chargerTout = async () => {
+    setLoading(true);
+    await Promise.all([
+      chargerFlux(),
+      api.get('/admin/treasury/summary').then(r => setSummary(r.data)).catch(() => {}),
+      api.get('/admin/treasury/groupages').then(r => setParGroupage(r.data)).catch(() => {}),
+      api.get('/admin/treasury/members').then(r => setParMembre(r.data)).catch(() => {}),
+    ]);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    chargerTout();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!loading) chargerFlux();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtres]);
+
+  const supprimerFlux = async (flow) => {
+    if (!window.confirm(fr
+      ? `Supprimer ce mouvement de ${FCFA(flow.amount_fcfa)} ? Cette action est définitive.`
+      : `Delete this ${FCFA(flow.amount_fcfa)} entry? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/admin/cash-flows/${flow.flow_id}`);
+      toast.success(fr ? 'Mouvement supprimé' : 'Entry deleted');
+      chargerTout();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    }
+  };
+
+  const s = data.summary || {};
+  const dormantTotal = parGroupage.reduce((acc, g) => acc + (g.idle_fcfa || 0), 0);
+
+  if (loading) {
+    return <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-treasury">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <h1 className="font-['Bebas_Neue'] text-4xl">{fr ? 'Trésorerie' : 'Treasury'}</h1>
+        <button
+          onClick={() => setShowForm(true)}
+          className="btn-gold px-4 py-2 rounded-md flex items-center gap-2"
+          data-testid="add-flow-btn"
+        >
+          <Plus className="w-4 h-4" />
+          {fr ? 'Saisir un mouvement' : 'Add entry'}
+        </button>
+      </div>
+      <p className="text-[#A1A1AA] mb-6">
+        {fr
+          ? "Tous les flux entrants et sortants, et où dorment les fonds de chaque groupage. Les paiements en ligne s'inscrivent seuls ; les versements REasy et encaissements hors site se saisissent ici."
+          : 'All money in and out, and where each groupage\'s funds are sitting. Online payments record themselves; REasy transfers and off-site collections are entered here.'}
+      </p>
+
+      {/* Cartes de synthese */}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <StatCard label={fr ? 'Entrées confirmées' : 'Confirmed in'} value={FCFA(s.in_confirmed)} color="#22C55E" icon={Package} />
+        <StatCard label={fr ? 'Sorties confirmées' : 'Confirmed out'} value={FCFA(s.out_confirmed)} color="#EF4444" icon={Truck} />
+        <StatCard label={fr ? 'Solde net' : 'Net balance'} value={FCFA(s.net_confirmed)} color="#D4AF37" icon={LayoutDashboard} />
+        <StatCard label={fr ? 'Argent dormant' : 'Idle funds'} value={FCFA(dormantTotal)} color="#F97316" icon={AlertTriangle} />
+      </div>
+
+      {(s.in_pending > 0 || s.out_pending > 0) && (
+        <div className="bg-[#F97316]/10 border border-[#F97316]/30 rounded-lg p-3 mb-6 text-sm text-[#F97316]">
+          {fr ? 'En attente de confirmation' : 'Awaiting confirmation'} :
+          {' '}{FCFA(s.in_pending)} {fr ? 'à recevoir' : 'incoming'} ·
+          {' '}{FCFA(s.out_pending)} {fr ? 'à verser' : 'outgoing'}
+        </div>
+      )}
+
+      {/* Onglets */}
+      <div className="flex gap-2 border-b border-[#2A2A2A] mb-4 overflow-x-auto">
+        {[
+          ['flux', fr ? 'Tous les flux' : 'All flows'],
+          ['groupages', fr ? 'Par groupage' : 'By groupage'],
+          ['membres', fr ? 'Par client' : 'By client'],
+          ['synthese', fr ? 'Par compte & période' : 'By account & period'],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => setVue(key)}
+            className={`px-4 py-2 border-b-2 whitespace-nowrap transition-colors ${
+              vue === key ? 'border-[#D4AF37] text-[#D4AF37]' : 'border-transparent text-[#A1A1AA] hover:text-white'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {vue === 'flux' && (
+        <TreasuryFlows
+          data={data} filtres={filtres} setFiltres={setFiltres}
+          groupages={parGroupage} fr={fr} onDelete={supprimerFlux}
+        />
+      )}
+      {vue === 'groupages' && <TreasuryByGroupage rows={parGroupage} fr={fr} />}
+      {vue === 'membres' && <TreasuryByMember rows={parMembre} fr={fr} />}
+      {vue === 'synthese' && <TreasurySummary summary={summary} fr={fr} />}
+
+      {showForm && (
+        <CashFlowModal
+          fr={fr}
+          onClose={() => setShowForm(false)}
+          onSaved={() => { setShowForm(false); chargerTout(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+// --- Vue 1 : liste des flux, filtrable ---
+const TreasuryFlows = ({ data, filtres, setFiltres, groupages, fr, onDelete }) => {
+  const set = (patch) => setFiltres({ ...filtres, ...patch });
+  return (
+    <div>
+      <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+        <select value={filtres.direction} onChange={(e) => set({ direction: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Sens' : 'Direction'}</option>
+          <option value="in">{fr ? 'Entrées' : 'In'}</option>
+          <option value="out">{fr ? 'Sorties' : 'Out'}</option>
+        </select>
+        <select value={filtres.account} onChange={(e) => set({ account: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Compte' : 'Account'}</option>
+          {FLOW_ACCOUNTS.map(a => <option key={a} value={a}>{ACCOUNT_LABELS[a]}</option>)}
+        </select>
+        <select value={filtres.category} onChange={(e) => set({ category: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Catégorie' : 'Category'}</option>
+          {FLOW_CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
+        </select>
+        <select value={filtres.groupage_id} onChange={(e) => set({ groupage_id: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Groupage' : 'Groupage'}</option>
+          {groupages.map(g => (
+            <option key={g.groupage_id} value={g.groupage_id}>{g.reference || g.groupage_id}</option>
+          ))}
+        </select>
+        <input type="date" value={filtres.date_from} onChange={(e) => set({ date_from: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm" />
+        <input type="date" value={filtres.date_to} onChange={(e) => set({ date_to: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm" />
+      </div>
+
+      {data.flows.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-10 text-center text-[#71717A]">
+          {fr ? 'Aucun mouvement pour ces critères.' : 'No entries for these filters.'}
+        </div>
+      ) : (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg overflow-x-auto">
+          <table className="table-dark w-full text-sm">
+            <thead>
+              <tr>
+                <th>{fr ? 'Date' : 'Date'}</th>
+                <th>{fr ? 'Catégorie' : 'Category'}</th>
+                <th>{fr ? 'Compte' : 'Account'}</th>
+                <th>{fr ? 'Groupage' : 'Groupage'}</th>
+                <th className="text-right">{fr ? 'Montant' : 'Amount'}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.flows.map(f => (
+                <tr key={f.flow_id}>
+                  <td className="whitespace-nowrap">
+                    {new Date(f.occurred_at).toLocaleDateString(fr ? 'fr-FR' : 'en-US')}
+                    {f.status === 'pending' && (
+                      <span className="ml-2 text-[10px] text-[#F97316]">{fr ? 'en attente' : 'pending'}</span>
+                    )}
+                    {f.status === 'failed' && (
+                      <span className="ml-2 text-[10px] text-[#EF4444]">{fr ? 'échoué' : 'failed'}</span>
+                    )}
+                  </td>
+                  <td>
+                    {CATEGORY_LABELS[f.category] || f.category}
+                    {f.note && <div className="text-[11px] text-[#71717A]">{f.note}</div>}
+                  </td>
+                  <td>{ACCOUNT_LABELS[f.account] || f.account}</td>
+                  <td className="font-mono text-xs text-[#71717A]">{f.groupage_id ? (f.reference_groupage || f.groupage_id.slice(0, 10)) : '—'}</td>
+                  <td className={`text-right whitespace-nowrap font-medium ${f.direction === 'in' ? 'text-[#22C55E]' : 'text-[#EF4444]'}`}>
+                    {f.direction === 'in' ? '+' : '−'} {FCFA(f.amount_fcfa)}
+                    {f.currency !== 'XAF' && (
+                      <div className="text-[10px] text-[#71717A]">
+                        {new Intl.NumberFormat('fr-FR').format(f.amount)} {f.currency}
+                      </div>
+                    )}
+                  </td>
+                  <td className="text-right">
+                    <button
+                      onClick={() => onDelete(f)}
+                      className="text-[#71717A] hover:text-[#EF4444] transition-colors"
+                      aria-label={fr ? 'Supprimer' : 'Delete'}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// --- Vue 2 : position financiere par groupage ---
+const TreasuryByGroupage = ({ rows, fr }) => {
+  if (rows.length === 0) {
+    return (
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-10 text-center text-[#71717A]">
+        {fr ? 'Aucun mouvement rattaché à un groupage pour le moment.' : 'No groupage-linked entries yet.'}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      {rows.map(g => (
+        <div key={g.groupage_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            <span className="font-mono text-xs text-[#D4AF37] bg-[#D4AF37]/10 px-2 py-1 rounded">
+              {g.reference || '—'}
+            </span>
+            <span className="font-medium flex-1 min-w-0 truncate">{g.title}</span>
+            <span className="text-xs text-[#71717A]">
+              {g.current_members ?? 0} {fr ? 'membres' : 'members'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <Chiffre label={fr ? 'Encaissé' : 'Collected'} valeur={g.collected_fcfa} couleur="#22C55E" />
+            <Chiffre label={fr ? 'Fournisseur' : 'Supplier'} valeur={g.supplier_paid_fcfa} couleur="#A1A1AA" />
+            <Chiffre label={fr ? 'Transitaire' : 'Freight'} valeur={g.freight_paid_fcfa} couleur="#A1A1AA" />
+            <Chiffre label={fr ? 'Douane' : 'Customs'} valeur={g.customs_paid_fcfa} couleur="#A1A1AA" />
+            <Chiffre
+              label={fr ? 'Dort en caisse' : 'Idle'}
+              valeur={g.idle_fcfa}
+              couleur={g.idle_fcfa < 0 ? '#EF4444' : '#F97316'}
+            />
+          </div>
+          {g.idle_fcfa < 0 && (
+            <p className="text-[11px] text-[#EF4444] mt-2">
+              {fr
+                ? "Vous avez avancé plus d'argent que ce que les membres ont versé sur ce groupage."
+                : 'You have advanced more than members have paid on this groupage.'}
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const Chiffre = ({ label, valeur, couleur }) => (
+  <div>
+    <p className="text-[11px] text-[#71717A]">{label}</p>
+    <p className="font-medium" style={{ color: couleur }}>{FCFA(valeur)}</p>
+  </div>
+);
+
+// --- Vue 3 : ce que chaque client a verse et ce qu'il doit ---
+const TreasuryByMember = ({ rows, fr }) => {
+  if (rows.length === 0) {
+    return (
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-10 text-center text-[#71717A]">
+        {fr ? 'Aucune adhésion enregistrée.' : 'No memberships yet.'}
+      </div>
+    );
+  }
+  return (
+    <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg overflow-x-auto">
+      <table className="table-dark w-full text-sm">
+        <thead>
+          <tr>
+            <th>{fr ? 'Client' : 'Client'}</th>
+            <th>{fr ? 'Groupage' : 'Groupage'}</th>
+            <th className="text-right">{fr ? 'Dû' : 'Due'}</th>
+            <th className="text-right">{fr ? 'Versé' : 'Paid'}</th>
+            <th className="text-right">{fr ? 'Reste' : 'Outstanding'}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.user_id}-${r.groupage_id}-${i}`}>
+              <td>
+                {r.name || '—'}
+                <div className="text-[11px] text-[#71717A]">{r.phone || r.email}</div>
+              </td>
+              <td className="font-mono text-xs">{r.reference || '—'}</td>
+              <td className="text-right whitespace-nowrap">{FCFA(r.due_fcfa)}</td>
+              <td className="text-right whitespace-nowrap text-[#22C55E]">{FCFA(r.paid_fcfa)}</td>
+              <td className={`text-right whitespace-nowrap font-medium ${
+                r.outstanding_fcfa > 0 ? 'text-[#F97316]' : 'text-[#22C55E]'
+              }`}>
+                {r.outstanding_fcfa > 0 ? FCFA(r.outstanding_fcfa) : (fr ? 'à jour' : 'settled')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// --- Vue 4 : soldes par compte, ventilation, serie mensuelle ---
+const TreasurySummary = ({ summary, fr }) => {
+  if (!summary) return null;
+  const comptes = Object.entries(summary.by_account || {});
+  const categories = Object.entries(summary.by_category || {});
+  const mois = summary.monthly || [];
+
+  return (
+    <div className="space-y-6">
+      <Bloc titre={fr ? 'Par compte' : 'By account'}>
+        {comptes.length === 0
+          ? <Vide fr={fr} />
+          : comptes.map(([cle, v]) => (
+              <LigneSynthese key={cle} label={ACCOUNT_LABELS[cle] || cle} entree={v.in} sortie={v.out} net={v.net} />
+            ))}
+      </Bloc>
+
+      <Bloc titre={fr ? 'Par catégorie' : 'By category'}>
+        {categories.length === 0
+          ? <Vide fr={fr} />
+          : categories.map(([cle, v]) => (
+              <LigneSynthese key={cle} label={CATEGORY_LABELS[cle] || cle} entree={v.in} sortie={v.out} net={v.net} />
+            ))}
+      </Bloc>
+
+      <Bloc titre={fr ? 'Par mois' : 'By month'}>
+        {mois.length === 0
+          ? <Vide fr={fr} />
+          : mois.map(m => (
+              <LigneSynthese key={m.month} label={m.month} entree={m.in} sortie={m.out} net={m.net} />
+            ))}
+      </Bloc>
+    </div>
+  );
+};
+
+const Bloc = ({ titre, children }) => (
+  <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4">
+    <h3 className="font-medium mb-3">{titre}</h3>
+    <div className="space-y-2">{children}</div>
+  </div>
+);
+
+const Vide = ({ fr }) => (
+  <p className="text-sm text-[#71717A]">{fr ? 'Aucune donnée.' : 'No data.'}</p>
+);
+
+const LigneSynthese = ({ label, entree, sortie, net }) => (
+  <div className="flex flex-wrap items-center gap-2 text-sm border-b border-[#2A2A2A] pb-2 last:border-0">
+    <span className="flex-1 min-w-0 truncate">{label}</span>
+    <span className="text-[#22C55E] whitespace-nowrap">+{FCFA(entree)}</span>
+    <span className="text-[#EF4444] whitespace-nowrap">−{FCFA(sortie)}</span>
+    <span className={`whitespace-nowrap font-medium w-32 text-right ${net >= 0 ? 'text-[#D4AF37]' : 'text-[#EF4444]'}`}>
+      {FCFA(net)}
+    </span>
+  </div>
+);
+
+// --- Saisie manuelle d'un mouvement ---
+const CashFlowModal = ({ fr, onClose, onSaved }) => {
+  const [groupages, setGroupages] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({
+    direction: 'out', amount: '', currency: 'XAF', account: 'reasy',
+    category: 'supplier_payment', status: 'confirmed',
+    occurred_at: new Date().toISOString().slice(0, 10),
+    groupage_id: '', reference: '', note: '', proof_url: ''
+  });
+  const set = (patch) => setForm({ ...form, ...patch });
+
+  useEffect(() => {
+    api.get('/groupages?limit=200').then(r => setGroupages(r.data)).catch(() => {});
+  }, []);
+
+  // Le sens decoule de la categorie : evite d'enregistrer un paiement
+  // fournisseur en entree d'argent par inadvertance.
+  const choisirCategorie = (category) => {
+    set({ category, direction: INCOMING_CATEGORIES.includes(category) ? 'in' : 'out' });
+  };
+
+  const enregistrer = async (e) => {
+    e.preventDefault();
+    const montant = parseFloat(form.amount);
+    if (!(montant > 0)) {
+      toast.error(fr ? 'Montant invalide' : 'Invalid amount');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post('/admin/cash-flows', {
+        ...form,
+        amount: montant,
+        groupage_id: form.groupage_id || null,
+        reference: form.reference || null,
+        note: form.note || null,
+        proof_url: form.proof_url || null,
+        occurred_at: new Date(form.occurred_at).toISOString(),
+      });
+      toast.success(fr ? 'Mouvement enregistré' : 'Entry recorded');
+      onSaved();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 overflow-y-auto">
+      <form onSubmit={enregistrer} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6 w-full max-w-2xl my-8 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-['Bebas_Neue'] text-2xl">{fr ? 'Saisir un mouvement' : 'Add entry'}</h3>
+          <button type="button" onClick={onClose} className="text-[#A1A1AA] hover:text-white">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Catégorie' : 'Category'}</label>
+            <select value={form.category} onChange={(e) => choisirCategorie(e.target.value)} className="input-dark w-full px-4 py-2 rounded-md">
+              {FLOW_CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
+            </select>
+            <p className="text-[11px] text-[#71717A] mt-1">
+              {form.direction === 'in'
+                ? (fr ? "Entrée d'argent" : 'Money in')
+                : (fr ? "Sortie d'argent" : 'Money out')}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Compte utilisé' : 'Account used'}</label>
+            <select value={form.account} onChange={(e) => set({ account: e.target.value })} className="input-dark w-full px-4 py-2 rounded-md">
+              {FLOW_ACCOUNTS.map(a => <option key={a} value={a}>{ACCOUNT_LABELS[a]}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Montant' : 'Amount'}</label>
+            <input type="number" step="0.01" min="0" required value={form.amount}
+              onChange={(e) => set({ amount: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" data-testid="flow-amount" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Devise' : 'Currency'}</label>
+            <select value={form.currency} onChange={(e) => set({ currency: e.target.value })} className="input-dark w-full px-4 py-2 rounded-md">
+              {['XAF', 'EUR', 'USD', 'CNY'].map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <p className="text-[11px] text-[#71717A] mt-1">
+              {fr ? 'Converti en FCFA pour les totaux.' : 'Converted to FCFA for totals.'}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Date' : 'Date'}</label>
+            <input type="date" required value={form.occurred_at}
+              onChange={(e) => set({ occurred_at: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Statut' : 'Status'}</label>
+            <select value={form.status} onChange={(e) => set({ status: e.target.value })} className="input-dark w-full px-4 py-2 rounded-md">
+              <option value="confirmed">{fr ? 'Confirmé' : 'Confirmed'}</option>
+              <option value="pending">{fr ? 'En attente' : 'Pending'}</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Groupage concerné (optionnel)' : 'Related groupage (optional)'}</label>
+            <select value={form.groupage_id} onChange={(e) => set({ groupage_id: e.target.value })} className="input-dark w-full px-4 py-2 rounded-md">
+              <option value="">{fr ? '— Aucun (frais général) —' : '— None (general expense) —'}</option>
+              {groupages.map(g => (
+                <option key={g.groupage_id} value={g.groupage_id}>
+                  {g.reference ? `${g.reference} · ` : ''}{g.title}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Référence externe' : 'External reference'}</label>
+            <input type="text" value={form.reference} onChange={(e) => set({ reference: e.target.value })}
+              placeholder={fr ? 'N° de transaction REasy / Tara' : 'REasy / Tara transaction no.'}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Justificatif (URL)' : 'Proof (URL)'}</label>
+            <input type="url" value={form.proof_url} onChange={(e) => set({ proof_url: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Note' : 'Note'}</label>
+            <input type="text" value={form.note} onChange={(e) => set({ note: e.target.value })}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+        </div>
+
+        <div className="flex gap-3 pt-2">
+          <button type="submit" disabled={saving} className="btn-gold px-6 py-2 rounded-md flex items-center gap-2 disabled:opacity-50">
+            {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+            {fr ? 'Enregistrer' : 'Save'}
+          </button>
+          <button type="button" onClick={onClose} className="btn-outline px-6 py-2 rounded-md">
+            {fr ? 'Annuler' : 'Cancel'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 };

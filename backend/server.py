@@ -467,6 +467,108 @@ class LogisticsDocument(BaseModel):
     uploaded_at: Optional[str] = None
 
 # ========================
+# TRESORERIE
+# ========================
+# Un flux = un mouvement d'argent, entrant ou sortant. Le registre est la source
+# unique de verite : les paiements Stripe/Tara y sont pousses automatiquement,
+# les versements REasy (pas d'API publique) et les encaissements hors site y
+# sont saisis a la main. Tout est ramene en FCFA pour pouvoir additionner.
+
+CASH_FLOW_DIRECTIONS = ["in", "out"]
+# Comptes par lesquels l'argent transite reellement
+CASH_FLOW_ACCOUNTS = ["tara", "reasy", "stripe", "cash", "bank", "other"]
+# A quoi correspond le mouvement. Determine aussi la contrepartie attendue :
+# un member_payment est lie a un client, un supplier_payment a un fournisseur.
+CASH_FLOW_CATEGORIES = [
+    "member_payment",     # entrant : un membre paie sa part (caution ou solde)
+    "refund",             # sortant : remboursement d'un membre
+    "supplier_payment",   # sortant : paiement du fournisseur chinois (REasy)
+    "freight_payment",    # sortant : paiement du transitaire
+    "customs_duty",       # sortant : droits de douane
+    "operating_expense",  # sortant : frais de fonctionnement (pub, outils...)
+    "other_income",       # entrant : divers
+]
+CASH_FLOW_STATUSES = ["pending", "confirmed", "failed"]
+
+# Taux de conversion vers le FCFA, devise de reference du registre.
+FCFA_PER_EUR = 655.957  # parite fixe XAF/EUR
+CURRENCY_TO_FCFA = {
+    "xaf": 1.0,
+    "fcfa": 1.0,
+    "eur": FCFA_PER_EUR,
+    "usd": float(USD_TO_FCFA),
+    "cny": float(CNY_TO_FCFA),
+}
+
+class CashFlowCreate(BaseModel):
+    direction: str
+    amount: float = Field(gt=0)
+    currency: str = "XAF"
+    account: str
+    category: str
+    status: str = "confirmed"
+    occurred_at: Optional[datetime] = None
+    # Dimensions d'analyse : toutes optionnelles, mais plus il y en a, plus le
+    # tableau de bord peut ventiler finement.
+    groupage_id: Optional[str] = None
+    user_id: Optional[str] = None
+    supplier_id: Optional[str] = None
+    transitaire_id: Optional[str] = None
+    reference: Optional[str] = None   # ref externe : id de transaction Tara/REasy
+    note: Optional[str] = None
+    proof_url: Optional[str] = None
+
+    @field_validator("direction")
+    @classmethod
+    def check_direction(cls, v):
+        if v not in CASH_FLOW_DIRECTIONS:
+            raise ValueError(f"direction must be one of: {', '.join(CASH_FLOW_DIRECTIONS)}")
+        return v
+
+    @field_validator("account")
+    @classmethod
+    def check_account(cls, v):
+        if v not in CASH_FLOW_ACCOUNTS:
+            raise ValueError(f"account must be one of: {', '.join(CASH_FLOW_ACCOUNTS)}")
+        return v
+
+    @field_validator("category")
+    @classmethod
+    def check_category(cls, v):
+        if v not in CASH_FLOW_CATEGORIES:
+            raise ValueError(f"category must be one of: {', '.join(CASH_FLOW_CATEGORIES)}")
+        return v
+
+    @field_validator("status")
+    @classmethod
+    def check_status(cls, v):
+        if v not in CASH_FLOW_STATUSES:
+            raise ValueError(f"status must be one of: {', '.join(CASH_FLOW_STATUSES)}")
+        return v
+
+    @field_validator("currency")
+    @classmethod
+    def check_currency(cls, v):
+        if v.lower() not in CURRENCY_TO_FCFA:
+            raise ValueError(f"currency must be one of: {', '.join(CURRENCY_TO_FCFA)}")
+        return v.upper()
+
+class CashFlowUpdate(BaseModel):
+    """Champs modifiables apres coup. Le montant et la devise restent figes :
+    corriger un montant se fait en supprimant le flux et en le ressaisissant,
+    pour que l'historique ne mente jamais."""
+    status: Optional[str] = None
+    category: Optional[str] = None
+    groupage_id: Optional[str] = None
+    user_id: Optional[str] = None
+    supplier_id: Optional[str] = None
+    transitaire_id: Optional[str] = None
+    reference: Optional[str] = None
+    note: Optional[str] = None
+    proof_url: Optional[str] = None
+    occurred_at: Optional[datetime] = None
+
+# ========================
 # HELPERS
 # ========================
 
@@ -520,6 +622,54 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+def to_fcfa(amount: float, currency: str) -> float:
+    """Convertit vers le FCFA, devise de reference du registre de tresorerie."""
+    return float(amount) * CURRENCY_TO_FCFA.get((currency or "XAF").lower(), 1.0)
+
+async def record_cash_flow(**fields) -> dict:
+    """Ecrit un mouvement dans le registre.
+
+    Passe par ici TOUT ce qui touche a l'argent (Stripe, Tara, saisie manuelle)
+    pour que le tableau de bord n'ait qu'une seule source a lire. `reference`
+    sert de garde-fou : deux appels avec la meme reference externe ne creent
+    qu'un seul flux, ce qui rend les webhooks rejouables sans double comptage.
+    """
+    reference = fields.get("reference")
+    if reference:
+        existing = await db.cash_flows.find_one({"reference": reference}, {"_id": 0})
+        if existing:
+            return existing
+
+    amount = float(fields.get("amount") or 0)
+    currency = (fields.get("currency") or "XAF").upper()
+    occurred_at = fields.get("occurred_at") or datetime.now(timezone.utc)
+    if isinstance(occurred_at, datetime):
+        occurred_at = occurred_at.isoformat()
+
+    flow = {
+        "flow_id": f"flow_{uuid.uuid4().hex[:12]}",
+        "direction": fields["direction"],
+        "amount": round(amount, 2),
+        "currency": currency,
+        # Montant canonique : c'est lui qu'on additionne, jamais `amount`.
+        "amount_fcfa": round(to_fcfa(amount, currency), 0),
+        "account": fields.get("account", "other"),
+        "category": fields["category"],
+        "status": fields.get("status", "confirmed"),
+        "groupage_id": fields.get("groupage_id"),
+        "user_id": fields.get("user_id"),
+        "supplier_id": fields.get("supplier_id"),
+        "transitaire_id": fields.get("transitaire_id"),
+        "reference": reference,
+        "note": fields.get("note"),
+        "proof_url": fields.get("proof_url"),
+        "occurred_at": occurred_at,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": fields.get("created_by"),
+    }
+    await db.cash_flows.insert_one(dict(flow))
+    return flow
 
 async def next_groupage_reference() -> str:
     """Reference courte et lisible d'un groupage (SR-0001, SR-0002...).
@@ -2015,29 +2165,50 @@ async def create_checkout(payment_data: PaymentCreate, request: Request, user: d
     
     return {"url": session.url, "session_id": session.id}
 
+async def settle_paid_session(session_id: str) -> None:
+    """Marque un paiement Stripe comme encaisse, met a jour l'adhesion, et
+    inscrit le mouvement au registre de tresorerie.
+
+    Appelee depuis DEUX endroits (le retour navigateur et le webhook), d'ou le
+    garde-fou sur le statut : le premier des deux fait le travail, le second ne
+    fait rien. Cote registre, `reference` porte le session_id, ce qui empeche
+    tout double comptage meme si Stripe rejoue l'evenement.
+    """
+    payment = await db.payment_transactions.find_one({"session_id": session_id})
+    if not payment or payment.get("status") == "completed":
+        return
+
+    await db.payment_transactions.update_one(
+        {"session_id": session_id},
+        {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    champ = "caution_paid" if payment["payment_type"] == "caution" else "solde_paid"
+    await db.groupage_members.update_one(
+        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
+        {"$set": {champ: True}}
+    )
+
+    await record_cash_flow(
+        direction="in",
+        amount=payment["amount"],
+        currency=payment.get("currency", "eur"),
+        account="stripe",
+        category="member_payment",
+        status="confirmed",
+        groupage_id=payment.get("groupage_id"),
+        user_id=payment.get("user_id"),
+        reference=f"stripe:{session_id}",
+        note=f"Stripe — {payment.get('payment_type')}",
+    )
+
 @api_router.get("/payments/status/{session_id}")
 async def get_payment_status(session_id: str, user: dict = Depends(get_current_user)):
     status = stripe.checkout.Session.retrieve(session_id)
-    
+
     if status.payment_status == "paid":
-        payment = await db.payment_transactions.find_one({"session_id": session_id})
-        if payment and payment["status"] != "completed":
-            await db.payment_transactions.update_one(
-                {"session_id": session_id},
-                {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
-            )
-            
-            if payment["payment_type"] == "caution":
-                await db.groupage_members.update_one(
-                    {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                    {"$set": {"caution_paid": True}}
-                )
-            else:
-                await db.groupage_members.update_one(
-                    {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                    {"$set": {"solde_paid": True}}
-                )
-    
+        await settle_paid_session(session_id)
+
     return {
         "status": status.status,
         "payment_status": status.payment_status,
@@ -2068,22 +2239,7 @@ async def stripe_webhook(request: Request):
         payment_status = session_obj.get("payment_status")
 
         if payment_status == "paid":
-            payment = await db.payment_transactions.find_one({"session_id": session_id})
-            if payment and payment["status"] != "completed":
-                await db.payment_transactions.update_one(
-                    {"session_id": session_id},
-                    {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
-                )
-                if payment["payment_type"] == "caution":
-                    await db.groupage_members.update_one(
-                        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                        {"$set": {"caution_paid": True}}
-                    )
-                else:
-                    await db.groupage_members.update_one(
-                        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-                        {"$set": {"solde_paid": True}}
-                    )
+            await settle_paid_session(session_id)
 
     return {"received": True}
 
@@ -2215,6 +2371,274 @@ async def get_admin_stats(user: dict = Depends(require_admin)):
         "pending_proposals": pending_proposals,
         "total_revenue": total_revenue[0]["total"] if total_revenue else 0
     }
+
+# ========================
+# TRESORERIE — registre des flux
+# ========================
+
+def _cash_flow_query(groupage_id=None, user_id=None, supplier_id=None,
+                     transitaire_id=None, account=None, category=None,
+                     direction=None, status=None, date_from=None, date_to=None) -> dict:
+    """Construit le filtre Mongo commun a la liste et aux agregats, pour que
+    les totaux affiches correspondent toujours exactement aux lignes listees."""
+    query = {}
+    for field, value in (
+        ("groupage_id", groupage_id), ("user_id", user_id),
+        ("supplier_id", supplier_id), ("transitaire_id", transitaire_id),
+        ("account", account), ("category", category),
+        ("direction", direction), ("status", status),
+    ):
+        if value:
+            query[field] = value
+
+    if date_from or date_to:
+        # occurred_at est stocke en ISO 8601 : la comparaison lexicographique
+        # sur ces chaines equivaut a une comparaison chronologique.
+        bounds = {}
+        if date_from:
+            bounds["$gte"] = date_from
+        if date_to:
+            bounds["$lte"] = date_to + "T23:59:59.999999+00:00" if len(date_to) == 10 else date_to
+        query["occurred_at"] = bounds
+    return query
+
+@api_router.post("/admin/cash-flows")
+async def create_cash_flow(flow: CashFlowCreate, user: dict = Depends(require_admin)):
+    """Saisie manuelle d'un mouvement : versement REasy vers un fournisseur,
+    encaissement Tara recu hors du site, frais de fonctionnement..."""
+    created = await record_cash_flow(**flow.model_dump(), created_by=user["user_id"])
+    return created
+
+@api_router.get("/admin/cash-flows")
+async def list_cash_flows(
+    groupage_id: Optional[str] = None, user_id: Optional[str] = None,
+    supplier_id: Optional[str] = None, transitaire_id: Optional[str] = None,
+    account: Optional[str] = None, category: Optional[str] = None,
+    direction: Optional[str] = None, status: Optional[str] = None,
+    date_from: Optional[str] = None, date_to: Optional[str] = None,
+    limit: int = 200, admin: dict = Depends(require_admin)
+):
+    query = _cash_flow_query(groupage_id, user_id, supplier_id, transitaire_id,
+                             account, category, direction, status, date_from, date_to)
+    flows = await db.cash_flows.find(query, {"_id": 0}).sort("occurred_at", -1).limit(limit).to_list(limit)
+
+    # Totaux calcules sur TOUT le perimetre filtre, pas seulement la page
+    # renvoyee : sinon les cartes de synthese mentiraient des que limit mord.
+    totals = await db.cash_flows.aggregate([
+        {"$match": query},
+        {"$group": {"_id": {"direction": "$direction", "status": "$status"},
+                    "total": {"$sum": "$amount_fcfa"}, "count": {"$sum": 1}}}
+    ]).to_list(20)
+
+    resume = {"in_confirmed": 0.0, "out_confirmed": 0.0, "in_pending": 0.0, "out_pending": 0.0, "count": 0}
+    for row in totals:
+        direction_, status_ = row["_id"]["direction"], row["_id"]["status"]
+        resume["count"] += row["count"]
+        if status_ == "confirmed":
+            resume[f"{direction_}_confirmed"] += row["total"]
+        elif status_ == "pending":
+            resume[f"{direction_}_pending"] += row["total"]
+
+    resume["net_confirmed"] = resume["in_confirmed"] - resume["out_confirmed"]
+    return {"flows": flows, "summary": {k: round(v, 0) if isinstance(v, float) else v
+                                        for k, v in resume.items()}}
+
+@api_router.put("/admin/cash-flows/{flow_id}")
+async def update_cash_flow(flow_id: str, update: CashFlowUpdate, admin: dict = Depends(require_admin)):
+    data = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
+    if not data:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+
+    for field, allowed in (("status", CASH_FLOW_STATUSES), ("category", CASH_FLOW_CATEGORIES)):
+        if field in data and data[field] not in allowed:
+            raise HTTPException(status_code=400, detail=f"{field} must be one of: {', '.join(allowed)}")
+
+    if isinstance(data.get("occurred_at"), datetime):
+        data["occurred_at"] = data["occurred_at"].isoformat()
+
+    result = await db.cash_flows.update_one({"flow_id": flow_id}, {"$set": data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Cash flow not found")
+    return await db.cash_flows.find_one({"flow_id": flow_id}, {"_id": 0})
+
+@api_router.delete("/admin/cash-flows/{flow_id}")
+async def delete_cash_flow(flow_id: str, admin: dict = Depends(require_admin)):
+    """Supprime un mouvement saisi par erreur. Les flux issus d'un paiement
+    reel (Stripe/Tara) devraient plutot etre passes en 'failed' pour garder
+    la trace de ce qui s'est passe."""
+    result = await db.cash_flows.delete_one({"flow_id": flow_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Cash flow not found")
+    return {"message": "Cash flow deleted"}
+
+@api_router.get("/admin/treasury/summary")
+async def treasury_summary(date_from: Optional[str] = None, date_to: Optional[str] = None,
+                           admin: dict = Depends(require_admin)):
+    """Vue d'ensemble : soldes par compte, ventilation par categorie, et serie
+    mensuelle des entrees/sorties."""
+    base = _cash_flow_query(date_from=date_from, date_to=date_to)
+
+    async def group_by(field: str):
+        rows = await db.cash_flows.aggregate([
+            {"$match": {**base, "status": "confirmed"}},
+            {"$group": {"_id": {"key": f"${field}", "direction": "$direction"},
+                        "total": {"$sum": "$amount_fcfa"}, "count": {"$sum": 1}}}
+        ]).to_list(200)
+        out = {}
+        for r in rows:
+            key = r["_id"]["key"] or "—"
+            entry = out.setdefault(key, {"in": 0.0, "out": 0.0, "count": 0})
+            entry[r["_id"]["direction"]] += r["total"]
+            entry["count"] += r["count"]
+        for entry in out.values():
+            entry["net"] = round(entry["in"] - entry["out"], 0)
+            entry["in"] = round(entry["in"], 0)
+            entry["out"] = round(entry["out"], 0)
+        return out
+
+    par_compte = await group_by("account")
+    par_categorie = await group_by("category")
+
+    # Serie mensuelle : occurred_at est une chaine ISO, les 7 premiers
+    # caracteres donnent directement "AAAA-MM".
+    mensuel_rows = await db.cash_flows.aggregate([
+        {"$match": {**base, "status": "confirmed"}},
+        {"$group": {"_id": {"mois": {"$substr": ["$occurred_at", 0, 7]}, "direction": "$direction"},
+                    "total": {"$sum": "$amount_fcfa"}}},
+        {"$sort": {"_id.mois": 1}}
+    ]).to_list(200)
+    mensuel = {}
+    for r in mensuel_rows:
+        mois = mensuel.setdefault(r["_id"]["mois"], {"month": r["_id"]["mois"], "in": 0.0, "out": 0.0})
+        mois[r["_id"]["direction"]] += r["total"]
+    serie = []
+    for mois in sorted(mensuel.values(), key=lambda m: m["month"]):
+        mois["in"], mois["out"] = round(mois["in"], 0), round(mois["out"], 0)
+        mois["net"] = round(mois["in"] - mois["out"], 0)
+        serie.append(mois)
+
+    en_attente = await db.cash_flows.aggregate([
+        {"$match": {**base, "status": "pending"}},
+        {"$group": {"_id": "$direction", "total": {"$sum": "$amount_fcfa"}, "count": {"$sum": 1}}}
+    ]).to_list(10)
+
+    return {
+        "by_account": par_compte,
+        "by_category": par_categorie,
+        "monthly": serie,
+        "pending": {r["_id"]: {"total": round(r["total"], 0), "count": r["count"]} for r in en_attente},
+    }
+
+@api_router.get("/admin/treasury/groupages")
+async def treasury_by_groupage(admin: dict = Depends(require_admin)):
+    """Position financiere de chaque groupage : ce qui est entre, ce qui est
+    sorti, et ce qui dort encore en caisse.
+
+    L'argent 'dormant' est la difference entre ce que les membres ont verse et
+    ce qui a effectivement ete depense pour eux (fournisseur, transitaire,
+    douane). C'est le montant dont on est comptable tant que la marchandise
+    n'est pas livree.
+    """
+    rows = await db.cash_flows.aggregate([
+        {"$match": {"status": "confirmed", "groupage_id": {"$ne": None}}},
+        {"$group": {"_id": {"groupage_id": "$groupage_id", "category": "$category"},
+                    "total": {"$sum": "$amount_fcfa"}}}
+    ]).to_list(1000)
+
+    par_groupage = {}
+    for r in rows:
+        gid = r["_id"]["groupage_id"]
+        par_groupage.setdefault(gid, {})[r["_id"]["category"]] = round(r["total"], 0)
+
+    groupages = await db.groupages.find(
+        {"groupage_id": {"$in": list(par_groupage.keys())}} if par_groupage else {},
+        {"_id": 0, "groupage_id": 1, "reference": 1, "title": 1, "status": 1,
+         "shipment_status": 1, "current_members": 1}
+    ).to_list(500)
+
+    resultat = []
+    for g in groupages:
+        cats = par_groupage.get(g["groupage_id"], {})
+        encaisse = cats.get("member_payment", 0)
+        rembourse = cats.get("refund", 0)
+        fournisseur = cats.get("supplier_payment", 0)
+        transitaire = cats.get("freight_payment", 0)
+        douane = cats.get("customs_duty", 0)
+        depense = fournisseur + transitaire + douane + rembourse
+        resultat.append({
+            **g,
+            "collected_fcfa": encaisse,
+            "refunded_fcfa": rembourse,
+            "supplier_paid_fcfa": fournisseur,
+            "freight_paid_fcfa": transitaire,
+            "customs_paid_fcfa": douane,
+            "spent_fcfa": depense,
+            # Positif : de l'argent encaisse pas encore depense (il dort).
+            # Negatif : on a avance de l'argent qui n'est pas encore couvert.
+            "idle_fcfa": round(encaisse - depense, 0),
+        })
+
+    resultat.sort(key=lambda r: r["idle_fcfa"], reverse=True)
+    return resultat
+
+@api_router.get("/admin/treasury/members")
+async def treasury_by_member(groupage_id: Optional[str] = None, admin: dict = Depends(require_admin)):
+    """Ce que chaque client a verse, et ce qu'il lui reste a payer.
+
+    Le du provient de l'adhesion au groupage (total_price_fcfa), le verse du
+    registre : l'ecart est ce qu'on doit encore lui reclamer.
+    """
+    query = {"groupage_id": groupage_id} if groupage_id else {}
+    memberships = await db.groupage_members.find(query, {"_id": 0}).to_list(1000)
+    if not memberships:
+        return []
+
+    paid_rows = await db.cash_flows.aggregate([
+        {"$match": {"status": "confirmed", "category": {"$in": ["member_payment", "refund"]},
+                    **({"groupage_id": groupage_id} if groupage_id else {})}},
+        {"$group": {"_id": {"user_id": "$user_id", "groupage_id": "$groupage_id",
+                            "direction": "$direction"},
+                    "total": {"$sum": "$amount_fcfa"}}}
+    ]).to_list(2000)
+
+    verse = {}
+    for r in paid_rows:
+        key = (r["_id"]["user_id"], r["_id"]["groupage_id"])
+        signe = 1 if r["_id"]["direction"] == "in" else -1
+        verse[key] = verse.get(key, 0) + signe * r["total"]
+
+    user_ids = list({m["user_id"] for m in memberships})
+    users = await db.users.find({"user_id": {"$in": user_ids}},
+                                {"_id": 0, "user_id": 1, "name": 1, "email": 1, "phone": 1}).to_list(1000)
+    par_user = {u["user_id"]: u for u in users}
+
+    groupage_ids = list({m["groupage_id"] for m in memberships})
+    groupages = await db.groupages.find({"groupage_id": {"$in": groupage_ids}},
+                                        {"_id": 0, "groupage_id": 1, "reference": 1, "title": 1}).to_list(500)
+    par_groupage = {g["groupage_id"]: g for g in groupages}
+
+    lignes = []
+    for m in memberships:
+        du = float(m.get("total_price_fcfa") or 0)
+        paye = round(verse.get((m["user_id"], m["groupage_id"]), 0), 0)
+        u = par_user.get(m["user_id"], {})
+        g = par_groupage.get(m["groupage_id"], {})
+        lignes.append({
+            "user_id": m["user_id"],
+            "name": u.get("name"),
+            "email": u.get("email"),
+            "phone": u.get("phone"),
+            "groupage_id": m["groupage_id"],
+            "reference": g.get("reference"),
+            "groupage_title": g.get("title"),
+            "quantity": m.get("quantity"),
+            "due_fcfa": round(du, 0),
+            "paid_fcfa": paye,
+            "outstanding_fcfa": round(du - paye, 0),
+        })
+
+    lignes.sort(key=lambda r: r["outstanding_fcfa"], reverse=True)
+    return lignes
 
 @api_router.get("/admin/users")
 async def admin_list_users(
