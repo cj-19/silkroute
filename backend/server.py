@@ -129,6 +129,21 @@ MIN_GROUPAGE_TOTAL_FCFA = float(os.environ.get("MIN_GROUPAGE_TOTAL_FCFA", 25000)
 # transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
 SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
 
+# --- Tara Money (mobile money Cameroun) ---
+# Genere des liens de paiement (WhatsApp, Telegram, carte, SMS...) que le membre
+# ouvre pour payer. Les montants sont en FCFA entier, notre devise de reference :
+# aucune conversion n'est necessaire.
+TARA_API_URL = os.environ.get("TARA_API_URL", "https://www.dklo.co/api/tara/paymentlinks")
+TARA_API_KEY = os.environ.get("TARA_API_KEY")
+TARA_BUSINESS_ID = os.environ.get("TARA_BUSINESS_ID")
+# La documentation Tara ne decrit AUCUNE signature de webhook. A defaut, le
+# secret est place dans le chemin de l'URL de callback : sans lui, l'appel est
+# rejete. C'est la seule barriere disponible, d'ou l'exigence d'une valeur
+# longue et aleatoire (voir README / variables Railway).
+TARA_WEBHOOK_SECRET = os.environ.get("TARA_WEBHOOK_SECRET")
+# Montant de la caution demandee a l'adhesion, en FCFA.
+CAUTION_FCFA = float(os.environ.get("CAUTION_FCFA", 5000))
+
 # Phases d'expedition d'un groupage, dans l'ordre. Mises a jour par le transitaire
 # (ou l'admin) et affichees aux membres sur la page du groupage.
 SHIPMENT_PHASES = ["preparation", "picked_up", "in_transit", "customs", "arrived", "delivered"]
@@ -459,6 +474,10 @@ class PaymentCreate(BaseModel):
     groupage_id: str
     payment_type: str
     origin_url: str
+
+class TaraCheckoutCreate(BaseModel):
+    groupage_id: str
+    payment_type: str  # "caution" ou "solde"
 
 # Documents logistiques
 class LogisticsDocument(BaseModel):
@@ -2164,6 +2183,204 @@ async def create_checkout(payment_data: PaymentCreate, request: Request, user: d
     await db.payment_transactions.insert_one(payment_doc)
     
     return {"url": session.url, "session_id": session.id}
+
+# ========================
+# PAIEMENT TARA MONEY
+# ========================
+
+def _backend_base_url(request: Request) -> str:
+    """URL publique du backend, pour construire l'URL de webhook envoyee a Tara."""
+    explicit = os.environ.get("BACKEND_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    return str(request.base_url).rstrip("/")
+
+async def _member_amount_due_fcfa(groupage_id: str, user_id: str, payment_type: str) -> float:
+    """Montant a payer, en FCFA. La caution est forfaitaire ; le solde est le
+    reste du total de l'adhesion une fois la caution deduite."""
+    membership = await db.groupage_members.find_one({"groupage_id": groupage_id, "user_id": user_id})
+    if not membership:
+        raise HTTPException(status_code=400, detail="You must join the groupage first")
+
+    if payment_type == "caution":
+        return CAUTION_FCFA
+
+    total = float(membership.get("total_price_fcfa") or 0)
+    reste = total - CAUTION_FCFA
+    if reste <= 0:
+        raise HTTPException(status_code=400, detail="Nothing left to pay on this groupage")
+    return reste
+
+@api_router.post("/payments/tara/checkout")
+async def create_tara_checkout(data: TaraCheckoutCreate, request: Request,
+                               user: dict = Depends(get_current_user)):
+    """Genere les liens de paiement Tara pour la part du membre.
+
+    Renvoie plusieurs canaux (WhatsApp, Telegram, Dikalo, carte, SMS) : le
+    membre choisit celui qu'il utilise. Le paiement est enregistre en 'pending'
+    des maintenant ; c'est le webhook Tara qui le confirmera.
+    """
+    if not TARA_API_KEY or not TARA_BUSINESS_ID:
+        raise HTTPException(status_code=503, detail="Tara Money n'est pas configure sur ce serveur")
+    if data.payment_type not in ("caution", "solde"):
+        raise HTTPException(status_code=400, detail="payment_type must be 'caution' or 'solde'")
+
+    groupage = await db.groupages.find_one({"groupage_id": data.groupage_id}, PUBLIC_GROUPAGE_PROJECTION)
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+
+    montant = await _member_amount_due_fcfa(data.groupage_id, user["user_id"], data.payment_type)
+
+    # productId doit etre unique : c'est par lui que le webhook retrouve le
+    # paiement concerne.
+    payment_id = f"pay_{uuid.uuid4().hex[:12]}"
+    libelle = "Caution" if data.payment_type == "caution" else "Solde"
+    reference = groupage.get("reference") or groupage["groupage_id"]
+
+    payload = {
+        "apiKey": TARA_API_KEY,
+        "businessId": TARA_BUSINESS_ID,
+        "productId": payment_id,
+        "productName": f"{libelle} — {reference}"[:80],
+        "productPrice": int(round(montant)),  # Tara attend un entier en FCFA
+        "productDescription": f"{libelle} groupage {reference} — {groupage.get('title', '')}"[:200],
+        "webHookUrl": f"{_backend_base_url(request)}/api/webhook/tara/{TARA_WEBHOOK_SECRET}",
+    }
+    if groupage.get("product_image_url"):
+        payload["productPictureUrl"] = groupage["product_image_url"]
+    frontend = _frontend_base_url()
+    if frontend:
+        payload["returnUrl"] = f"{frontend}/payment/success?payment_id={payment_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as http_client:
+            response = await http_client.post(TARA_API_URL, json=payload)
+            response.raise_for_status()
+            tara = response.json()
+    except httpx.HTTPError as exc:
+        logger.error(f"Tara payment link creation failed: {exc}")
+        raise HTTPException(status_code=502, detail="Impossible de generer le lien de paiement")
+
+    if tara.get("status") != "success":
+        logger.error(f"Tara returned a non-success status: {tara}")
+        raise HTTPException(status_code=502, detail=tara.get("message") or "Tara a refuse la demande")
+
+    await db.payment_transactions.insert_one({
+        "payment_id": payment_id,
+        "provider": "tara",
+        "user_id": user["user_id"],
+        "groupage_id": data.groupage_id,
+        "payment_type": data.payment_type,
+        "amount": round(montant, 2),
+        "currency": "XAF",
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    # On ne renvoie que les liens : ni la cle API, ni le businessId ne doivent
+    # transiter jusqu'au navigateur.
+    return {
+        "payment_id": payment_id,
+        "amount_fcfa": int(round(montant)),
+        "links": {
+            "whatsapp": tara.get("whatsappLink"),
+            "telegram": tara.get("telegramLink"),
+            "dikalo": tara.get("dikaloLink"),
+            "general": tara.get("generalLink"),
+            "card": tara.get("cardLink"),
+            "sms": tara.get("smsLink"),
+        },
+    }
+
+def _extract_first(payload: dict, keys: list) -> Optional[str]:
+    """Recupere la premiere cle presente, en tolerant les variantes de nommage.
+    La doc Tara ne decrit pas le corps du webhook : on reste permissif plutot
+    que de rater un paiement sur un nom de champ different."""
+    for key in keys:
+        if payload.get(key) not in (None, ""):
+            return str(payload[key])
+    return None
+
+@api_router.post("/webhook/tara/{secret}")
+async def tara_webhook(secret: str, request: Request):
+    """Confirmation de paiement envoyee par Tara.
+
+    ATTENTION : la documentation Tara ne prevoit pas de signature. Le secret
+    dans l'URL est donc la seule authentification. Deux garde-fous s'ajoutent :
+    le paiement doit exister chez nous, et si le webhook annonce un montant, il
+    doit correspondre a celui qu'on attend - sinon on refuse et on journalise.
+    """
+    if not TARA_WEBHOOK_SECRET or not secrets.compare_digest(secret, TARA_WEBHOOK_SECRET):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    # Le format exact n'etant pas documente, on trace le premier appel reel :
+    # c'est ce qui permettra d'ajuster si les noms de champs different.
+    logger.info(f"Tara webhook payload: {payload}")
+
+    payment_id = _extract_first(payload, ["productId", "product_id", "productID", "reference", "orderId"])
+    if not payment_id:
+        logger.error(f"Tara webhook without any usable product identifier: {payload}")
+        return {"received": True, "handled": False}
+
+    payment = await db.payment_transactions.find_one({"payment_id": payment_id})
+    if not payment:
+        logger.error(f"Tara webhook for an unknown payment: {payment_id}")
+        return {"received": True, "handled": False}
+
+    statut = (_extract_first(payload, ["status", "paymentStatus", "state", "transactionStatus"]) or "").lower()
+    if statut and statut not in ("success", "successful", "paid", "completed", "confirmed"):
+        await db.payment_transactions.update_one(
+            {"payment_id": payment_id},
+            {"$set": {"status": "failed", "provider_status": statut}}
+        )
+        logger.warning(f"Tara reported a non-successful payment {payment_id}: {statut}")
+        return {"received": True, "handled": True, "settled": False}
+
+    montant_annonce = _extract_first(payload, ["amount", "productPrice", "montant", "value"])
+    if montant_annonce:
+        try:
+            if abs(float(montant_annonce) - float(payment["amount"])) > 1:
+                logger.error(
+                    f"Tara webhook amount mismatch for {payment_id}: "
+                    f"annonce={montant_annonce} attendu={payment['amount']}"
+                )
+                return {"received": True, "handled": False, "reason": "amount_mismatch"}
+        except ValueError:
+            pass  # montant illisible : on se fie a notre propre enregistrement
+
+    if payment.get("status") == "completed":
+        return {"received": True, "handled": True, "settled": True}  # deja traite
+
+    await db.payment_transactions.update_one(
+        {"payment_id": payment_id},
+        {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
+    )
+
+    champ = "caution_paid" if payment["payment_type"] == "caution" else "solde_paid"
+    await db.groupage_members.update_one(
+        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
+        {"$set": {champ: True}}
+    )
+
+    await record_cash_flow(
+        direction="in",
+        amount=payment["amount"],
+        currency=payment.get("currency", "XAF"),
+        account="tara",
+        category="member_payment",
+        status="confirmed",
+        groupage_id=payment.get("groupage_id"),
+        user_id=payment.get("user_id"),
+        reference=f"tara:{payment_id}",
+        note=f"Tara Money — {payment.get('payment_type')}",
+    )
+
+    return {"received": True, "handled": True, "settled": True}
 
 async def settle_paid_session(session_id: str) -> None:
     """Marque un paiement Stripe comme encaisse, met a jour l'adhesion, et

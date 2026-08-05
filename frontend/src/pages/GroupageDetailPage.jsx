@@ -53,6 +53,8 @@ const GroupageDetailPage = () => {
   const [joining, setJoining] = useState(false);
   const [quantity, setQuantity] = useState(1);
   const [showJoinConfirm, setShowJoinConfirm] = useState(false);
+  // null, ou le type de paiement a regler ('caution' | 'solde')
+  const [showPayment, setShowPayment] = useState(null);
   const [pickupCity, setPickupCity] = useState('');
   const [acceptPickup, setAcceptPickup] = useState(false);
   
@@ -185,14 +187,9 @@ const GroupageDetailPage = () => {
       toast.success(i18n.language === 'fr' ? 'Groupage rejoint!' : 'Joined groupage!');
       setShowJoinConfirm(false);
 
-      const origin = window.location.origin;
-      const paymentRes = await api.post('/payments/checkout', {
-        groupage_id: id,
-        payment_type: 'caution',
-        origin_url: origin
-      });
-
-      window.location.href = paymentRes.data.url;
+      // On ne redirige plus directement vers la carte bancaire : la plupart des
+      // acheteurs paient en mobile money. Le choix du moyen s'affiche d'abord.
+      setShowPayment('caution');
     } catch (error) {
       console.error('Join error:', error);
       toast.error(error.response?.data?.detail || t('common.error'));
@@ -265,7 +262,8 @@ const GroupageDetailPage = () => {
 
   const deadline = new Date(groupage.deadline);
   const daysLeft = Math.max(0, Math.ceil((deadline - new Date()) / (1000 * 60 * 60 * 24)));
-  const isMember = members.some(m => m.user_id === user?.user_id);
+  const myMembership = members.find(m => m.user_id === user?.user_id);
+  const isMember = Boolean(myMembership);
   const remainingQuantity = groupage.total_quantity - (groupage.current_quantity_reserved || 0);
   // La jauge suit la quantite reservee par rapport a la quantite cible
   const progress = groupage.total_quantity
@@ -445,6 +443,35 @@ const GroupageDetailPage = () => {
                   <p className="text-[#22C55E] font-medium mb-3">
                     {i18n.language === 'fr' ? 'Vous êtes membre' : 'You are a member'}
                   </p>
+
+                  {/* Rappel de ce qu'il reste a regler : sans ce bouton, un
+                      membre ne pourrait payer que la caution. */}
+                  {myMembership && !myMembership.caution_paid && (
+                    <button
+                      onClick={() => setShowPayment('caution')}
+                      className="w-full btn-gold py-2 rounded-md font-medium flex items-center justify-center gap-2 mb-2"
+                      data-testid="pay-caution-btn"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      {i18n.language === 'fr' ? 'Payer la caution' : 'Pay the deposit'}
+                    </button>
+                  )}
+                  {myMembership?.caution_paid && !myMembership?.solde_paid && (
+                    <button
+                      onClick={() => setShowPayment('solde')}
+                      className="w-full btn-gold py-2 rounded-md font-medium flex items-center justify-center gap-2 mb-2"
+                      data-testid="pay-solde-btn"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      {i18n.language === 'fr' ? 'Payer le solde' : 'Pay the balance'}
+                    </button>
+                  )}
+                  {myMembership?.caution_paid && myMembership?.solde_paid && (
+                    <p className="text-xs text-[#22C55E] mb-2">
+                      {i18n.language === 'fr' ? 'Votre paiement est complet.' : 'Your payment is complete.'}
+                    </p>
+                  )}
+
                   <button
                     onClick={handleInviteAssociates}
                     className="w-full btn-outline py-2 rounded-md font-medium flex items-center justify-center gap-2"
@@ -1013,6 +1040,15 @@ const GroupageDetailPage = () => {
             </div>
           </div>
         )}
+
+        {showPayment && (
+          <PaymentModal
+            groupageId={id}
+            paymentType={showPayment}
+            fr={i18n.language === 'fr'}
+            onClose={() => { setShowPayment(null); fetchGroupage(); }}
+          />
+        )}
       </div>
     </Layout>
   );
@@ -1199,6 +1235,126 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
           ))}
         </div>
       )}
+    </div>
+  );
+};
+
+// --- Choix du moyen de paiement ---
+// Le mobile money passe en premier : la majorite des acheteurs n'ont pas de
+// carte bancaire. Tara renvoie plusieurs liens, on expose les plus utiles.
+const PaymentModal = ({ groupageId, paymentType, fr, onClose }) => {
+  const [chargement, setChargement] = useState(true);
+  const [paiement, setPaiement] = useState(null);
+  const [erreur, setErreur] = useState(null);
+  const [carteEnCours, setCarteEnCours] = useState(false);
+
+  useEffect(() => {
+    let annule = false;
+    api.post('/payments/tara/checkout', { groupage_id: groupageId, payment_type: paymentType })
+      .then(res => { if (!annule) setPaiement(res.data); })
+      .catch(err => {
+        if (!annule) setErreur(err.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+      })
+      .finally(() => { if (!annule) setChargement(false); });
+    return () => { annule = true; };
+  }, [groupageId, paymentType, fr]);
+
+  const payerParCarte = async () => {
+    setCarteEnCours(true);
+    try {
+      const res = await api.post('/payments/checkout', {
+        groupage_id: groupageId,
+        payment_type: paymentType,
+        origin_url: window.location.origin
+      });
+      window.location.href = res.data.url;
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+      setCarteEnCours(false);
+    }
+  };
+
+  const canaux = paiement?.links || {};
+  const montant = paiement?.amount_fcfa
+    ? new Intl.NumberFormat('fr-FR').format(paiement.amount_fcfa) + ' FCFA'
+    : null;
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6 w-full max-w-md">
+        <h3 className="font-['Bebas_Neue'] text-2xl mb-1">
+          {fr ? 'Payer' : 'Pay'}{montant ? ` · ${montant}` : ''}
+        </h3>
+        <p className="text-sm text-[#A1A1AA] mb-5">
+          {paymentType === 'caution'
+            ? (fr ? 'Votre caution pour rejoindre le groupage.' : 'Your deposit to join the groupage.')
+            : (fr ? 'Le solde de votre commande.' : 'The balance of your order.')}
+        </p>
+
+        {chargement && (
+          <div className="flex justify-center py-8">
+            <Loader2 className="w-6 h-6 animate-spin text-[#D4AF37]" />
+          </div>
+        )}
+
+        {erreur && (
+          <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded-md p-3 text-sm text-[#EF4444] mb-4">
+            {erreur}
+          </div>
+        )}
+
+        {!chargement && (
+          <div className="space-y-2">
+            {canaux.whatsapp && (
+              <a href={canaux.whatsapp} target="_blank" rel="noopener noreferrer"
+                 className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2"
+                 data-testid="pay-whatsapp">
+                <MessageCircle className="w-4 h-4" />
+                {fr ? 'Payer via WhatsApp' : 'Pay via WhatsApp'}
+              </a>
+            )}
+            {canaux.general && (
+              <a href={canaux.general} target="_blank" rel="noopener noreferrer"
+                 className="btn-outline w-full px-4 py-3 rounded-md flex items-center justify-center gap-2">
+                <ExternalLink className="w-4 h-4" />
+                {fr ? 'Mobile Money (MTN / Orange)' : 'Mobile Money (MTN / Orange)'}
+              </a>
+            )}
+            {canaux.card && (
+              <a href={canaux.card} target="_blank" rel="noopener noreferrer"
+                 className="btn-outline w-full px-4 py-3 rounded-md flex items-center justify-center gap-2">
+                <CreditCard className="w-4 h-4" />
+                {fr ? 'Carte bancaire' : 'Bank card'}
+              </a>
+            )}
+            {canaux.telegram && (
+              <a href={canaux.telegram} target="_blank" rel="noopener noreferrer"
+                 className="text-xs text-[#71717A] hover:text-[#D4AF37] block text-center pt-1">
+                {fr ? 'Payer via Telegram' : 'Pay via Telegram'}
+              </a>
+            )}
+
+            {/* Repli si Tara n'a rien renvoye (non configure, ou en panne) */}
+            {!canaux.whatsapp && !canaux.general && (
+              <button onClick={payerParCarte} disabled={carteEnCours}
+                      className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2 disabled:opacity-50">
+                {carteEnCours ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+                {fr ? 'Payer par carte' : 'Pay by card'}
+              </button>
+            )}
+          </div>
+        )}
+
+        <p className="text-[11px] text-[#71717A] mt-4">
+          {fr
+            ? "Votre paiement est confirmé automatiquement dès que Tara nous le signale. Si le statut tarde, il se met à jour tout seul — inutile de payer deux fois."
+            : 'Your payment is confirmed automatically once Tara notifies us. If the status lags, it updates on its own — no need to pay twice.'}
+        </p>
+
+        <button onClick={onClose} className="btn-outline w-full px-4 py-2 rounded-md mt-4">
+          {fr ? 'Fermer' : 'Close'}
+        </button>
+      </div>
     </div>
   );
 };
