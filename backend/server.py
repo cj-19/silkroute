@@ -141,8 +141,19 @@ TARA_BUSINESS_ID = os.environ.get("TARA_BUSINESS_ID")
 # rejete. C'est la seule barriere disponible, d'ou l'exigence d'une valeur
 # longue et aleatoire (voir README / variables Railway).
 TARA_WEBHOOK_SECRET = os.environ.get("TARA_WEBHOOK_SECRET")
-# Montant de la caution demandee a l'adhesion, en FCFA.
-CAUTION_FCFA = float(os.environ.get("CAUTION_FCFA", 5000))
+# Caution demandee a l'adhesion, en FCFA. Il n'y a PLUS de caution universelle :
+# la valeur ci-dessous n'est qu'un defaut pour les groupages qui ne precisent
+# rien, et elle vaut 0 (paiement integral en une fois). Chaque groupage peut
+# fixer la sienne via le champ caution_fcfa.
+DEFAULT_CAUTION_FCFA = float(os.environ.get("DEFAULT_CAUTION_FCFA", 0))
+
+def get_caution_fcfa(groupage: dict) -> float:
+    """Caution propre a ce groupage. 0 = aucune caution, le membre regle tout
+    en une fois."""
+    valeur = groupage.get("caution_fcfa")
+    if valeur is None:
+        return DEFAULT_CAUTION_FCFA
+    return max(0.0, float(valeur))
 
 # Phases d'expedition d'un groupage, dans l'ordre. Mises a jour par le transitaire
 # (ou l'admin) et affichees aux membres sur la page du groupage.
@@ -379,6 +390,11 @@ class GroupageCreate(BaseModel):
     # Jamais expose par l'API publique : il revelerait notre structure de prix.
     service_fee_percent: Optional[float] = Field(default=None, ge=0, le=MAX_SERVICE_FEE_PERCENT)
 
+    # Caution demandee a l'adhesion, en FCFA. 0 (ou vide) = aucune caution, le
+    # membre regle la totalite en une fois. Visible des acheteurs : ils doivent
+    # savoir a quoi s'engage leur premier versement.
+    caution_fcfa: Optional[float] = Field(default=None, ge=0)
+
     # --- Prix et poids/volume (ancien mode CNY, conserve pour compatibilite) ---
     unit_price_cny: float  # Prix unitaire DE GROS en CNY (palier atteint avec la quantite cible)
     solo_unit_price_cny: Optional[float] = None
@@ -431,6 +447,7 @@ class GroupageResponse(BaseModel):
     # Prix directs en FCFA, hors transport (wholesale_unit_price_fcfa reste interne)
     member_unit_price_fcfa: Optional[float] = None
     solo_unit_price_fcfa: Optional[float] = None
+    caution_fcfa: Optional[float] = None  # 0/absent = paiement integral en une fois
     unit_price_cny: float
     unit_weight_kg: float
     transport_price_per_kg_fcfa: float
@@ -2129,19 +2146,15 @@ async def create_checkout(payment_data: PaymentCreate, request: Request, user: d
     groupage = await db.groupages.find_one({"groupage_id": payment_data.groupage_id})
     if not groupage:
         raise HTTPException(status_code=404, detail="Groupage not found")
-    
-    membership = await db.groupage_members.find_one({
-        "groupage_id": payment_data.groupage_id,
-        "user_id": user["user_id"]
-    })
-    
-    if payment_data.payment_type == "caution":
-        amount = 5000.0 / 655.957  # 5000 FCFA en EUR
-    else:
-        if not membership:
-            raise HTTPException(status_code=400, detail="You must join the groupage first")
-        amount = (membership["total_price_fcfa"] - 5000) / 655.957  # Solde en EUR
-    
+
+    # Le montant du est calcule au meme endroit que pour Tara, pour que les deux
+    # moyens de paiement ne puissent pas diverger (le controle d'adhesion y est
+    # inclus). Stripe facture en EUR.
+    montant_fcfa = await _member_amount_due_fcfa(
+        payment_data.groupage_id, user["user_id"], payment_data.payment_type
+    )
+    amount = montant_fcfa / FCFA_PER_EUR
+
     host_url = payment_data.origin_url
     amount_cents = int(round(amount, 2) * 100)  # Stripe attend un montant en plus petite unite (centimes)
     
@@ -2195,18 +2208,59 @@ def _backend_base_url(request: Request) -> str:
         return explicit
     return str(request.base_url).rstrip("/")
 
+async def mark_membership_paid(groupage_id: str, user_id: str, payment_type: str) -> None:
+    """Met a jour les drapeaux de paiement de l'adhesion.
+
+    Sans caution sur le groupage, l'unique versement couvre la totalite : on
+    solde donc les deux drapeaux d'un coup, sinon l'interface reclamerait
+    indefiniment un solde deja paye.
+    """
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0, "caution_fcfa": 1})
+    sans_caution = get_caution_fcfa(groupage or {}) <= 0
+
+    if sans_caution or payment_type == "solde":
+        champs = {"caution_paid": True, "solde_paid": True}
+    else:
+        champs = {"caution_paid": True}
+
+    await db.groupage_members.update_one(
+        {"user_id": user_id, "groupage_id": groupage_id},
+        {"$set": champs}
+    )
+
 async def _member_amount_due_fcfa(groupage_id: str, user_id: str, payment_type: str) -> float:
-    """Montant a payer, en FCFA. La caution est forfaitaire ; le solde est le
-    reste du total de l'adhesion une fois la caution deduite."""
+    """Montant a payer, en FCFA.
+
+    Sans caution (cas par defaut), il n'y a qu'un seul versement : le total.
+    Avec caution, le membre verse d'abord ce montant, puis le reste.
+    """
     membership = await db.groupage_members.find_one({"groupage_id": groupage_id, "user_id": user_id})
     if not membership:
         raise HTTPException(status_code=400, detail="You must join the groupage first")
 
-    if payment_type == "caution":
-        return CAUTION_FCFA
-
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0, "caution_fcfa": 1})
+    caution = get_caution_fcfa(groupage or {})
     total = float(membership.get("total_price_fcfa") or 0)
-    reste = total - CAUTION_FCFA
+
+    # Rien de plus a reclamer une fois l'adhesion soldee : sans ce garde-fou, un
+    # membre pourrait relancer un paiement deja regle.
+    if membership.get("solde_paid"):
+        raise HTTPException(status_code=400, detail="Cette commande est deja entierement payee")
+
+    if payment_type == "caution":
+        if membership.get("caution_paid"):
+            raise HTTPException(status_code=400, detail="Ce versement a deja ete effectue")
+        if caution <= 0:
+            # Pas de caution sur ce groupage : le "premier" paiement est le total.
+            return total
+        return min(caution, total)
+
+    # Sans caution il n'existe pas de solde separe : le total a ete demande en
+    # une fois. Accepter un "solde" ici refacturerait la totalite.
+    if caution <= 0:
+        raise HTTPException(status_code=400, detail="Ce groupage se regle en une seule fois")
+
+    reste = total - caution
     if reste <= 0:
         raise HTTPException(status_code=400, detail="Nothing left to pay on this groupage")
     return reste
@@ -2361,10 +2415,8 @@ async def tara_webhook(secret: str, request: Request):
         {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
     )
 
-    champ = "caution_paid" if payment["payment_type"] == "caution" else "solde_paid"
-    await db.groupage_members.update_one(
-        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-        {"$set": {champ: True}}
+    await mark_membership_paid(
+        payment["groupage_id"], payment["user_id"], payment["payment_type"]
     )
 
     await record_cash_flow(
@@ -2400,10 +2452,8 @@ async def settle_paid_session(session_id: str) -> None:
         {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc).isoformat()}}
     )
 
-    champ = "caution_paid" if payment["payment_type"] == "caution" else "solde_paid"
-    await db.groupage_members.update_one(
-        {"user_id": payment["user_id"], "groupage_id": payment["groupage_id"]},
-        {"$set": {champ: True}}
+    await mark_membership_paid(
+        payment["groupage_id"], payment["user_id"], payment["payment_type"]
     )
 
     await record_cash_flow(
@@ -3033,6 +3083,7 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
         "member_unit_price_fcfa": groupage_data.member_unit_price_fcfa,
         "solo_unit_price_fcfa": groupage_data.solo_unit_price_fcfa,
         "service_fee_percent": groupage_data.service_fee_percent,
+        "caution_fcfa": groupage_data.caution_fcfa,
         # Pricing historique en CNY (repli)
         "unit_price_cny": groupage_data.unit_price_cny,
         "solo_unit_price_cny": groupage_data.solo_unit_price_cny,
@@ -3078,7 +3129,7 @@ async def update_groupage(groupage_id: str, request: Request, user: dict = Depen
     allowed_fields = ["title", "title_en", "description", "description_en", "status", "product_image_url",
                       "is_featured", "suggested_resale_price_fcfa", "transitaire_status", "product_url",
                       "wholesale_unit_price_fcfa", "member_unit_price_fcfa", "solo_unit_price_fcfa",
-                      "service_fee_percent",
+                      "service_fee_percent", "caution_fcfa",
                       "unit_price_cny", "solo_unit_price_cny", "unit_weight_kg", "unit_volume_cbm",
                       "total_quantity", "total_order_price_cny", "internal_cost_cny",
                       "min_members", "max_members",

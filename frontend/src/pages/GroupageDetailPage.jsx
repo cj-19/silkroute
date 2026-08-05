@@ -453,7 +453,11 @@ const GroupageDetailPage = () => {
                       data-testid="pay-caution-btn"
                     >
                       <CreditCard className="w-4 h-4" />
-                      {i18n.language === 'fr' ? 'Payer la caution' : 'Pay the deposit'}
+                      {/* Sans caution sur ce groupage, le premier versement EST
+                          la totalite : le libelle doit le dire. */}
+                      {groupage.caution_fcfa > 0
+                        ? (i18n.language === 'fr' ? 'Payer la caution' : 'Pay the deposit')
+                        : (i18n.language === 'fr' ? 'Payer ma part' : 'Pay my share')}
                     </button>
                   )}
                   {myMembership?.caution_paid && !myMembership?.solde_paid && (
@@ -1033,7 +1037,9 @@ const GroupageDetailPage = () => {
                 ) : (
                   <>
                     <CreditCard className="w-5 h-5" />
-                    {i18n.language === 'fr' ? 'Confirmer et payer la caution' : 'Confirm and pay deposit'}
+                    {groupage.caution_fcfa > 0
+                      ? (i18n.language === 'fr' ? 'Confirmer et payer la caution' : 'Confirm and pay deposit')
+                      : (i18n.language === 'fr' ? 'Confirmer et payer' : 'Confirm and pay')}
                   </>
                 )}
               </button>
@@ -1045,6 +1051,7 @@ const GroupageDetailPage = () => {
           <PaymentModal
             groupageId={id}
             paymentType={showPayment}
+            hasCaution={groupage.caution_fcfa > 0}
             fr={i18n.language === 'fr'}
             onClose={() => { setShowPayment(null); fetchGroupage(); }}
           />
@@ -1242,7 +1249,7 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
 // --- Choix du moyen de paiement ---
 // Le mobile money passe en premier : la majorite des acheteurs n'ont pas de
 // carte bancaire. Tara renvoie plusieurs liens, on expose les plus utiles.
-const PaymentModal = ({ groupageId, paymentType, fr, onClose }) => {
+const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
   const [chargement, setChargement] = useState(true);
   const [paiement, setPaiement] = useState(null);
   const [erreur, setErreur] = useState(null);
@@ -1286,9 +1293,11 @@ const PaymentModal = ({ groupageId, paymentType, fr, onClose }) => {
           {fr ? 'Payer' : 'Pay'}{montant ? ` · ${montant}` : ''}
         </h3>
         <p className="text-sm text-[#A1A1AA] mb-5">
-          {paymentType === 'caution'
-            ? (fr ? 'Votre caution pour rejoindre le groupage.' : 'Your deposit to join the groupage.')
-            : (fr ? 'Le solde de votre commande.' : 'The balance of your order.')}
+          {paymentType !== 'caution'
+            ? (fr ? 'Le solde de votre commande.' : 'The balance of your order.')
+            : hasCaution
+              ? (fr ? 'Votre caution pour rejoindre le groupage.' : 'Your deposit to join the groupage.')
+              : (fr ? 'Votre part dans ce groupage, en une seule fois.' : 'Your share in this groupage, in a single payment.')}
         </p>
 
         {chargement && (

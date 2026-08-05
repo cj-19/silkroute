@@ -1216,6 +1216,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
     member_unit_price_fcfa: '',
     solo_unit_price_fcfa: '',
     service_fee_percent: '',
+    caution_fcfa: '',
     unit_price_cny: 100,
     solo_unit_price_cny: '',
     unit_weight_kg: 0.5,
@@ -1388,6 +1389,7 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
         service_fee_percent: formData.service_fee_percent === ''
           ? null
           : parseFloat(formData.service_fee_percent),
+        caution_fcfa: formData.caution_fcfa === '' ? null : parseFloat(formData.caution_fcfa),
         unit_price_cny: parseFloat(formData.unit_price_cny),
         solo_unit_price_cny: parseFloat(formData.solo_unit_price_cny) || null,
         unit_weight_kg: parseFloat(formData.unit_weight_kg),
@@ -1784,6 +1786,26 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
                   {i18n.language === 'fr'
                     ? 'Maximum 20 %. Prélevés sur la part du membre (marchandise + transport), fondus dans le total : l\'acheteur ne les voit pas comme une ligne séparée. Saisir 0 pour ne rien prélever.'
                     : 'Max 20%. Charged on the member share (goods + shipping) and blended into the total: buyers never see it as a separate line. Enter 0 for no fee.'}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm text-[#A1A1AA] mb-2">
+                  {i18n.language === 'fr' ? 'Caution à l\'adhésion (FCFA)' : 'Deposit on joining (FCFA)'}
+                </label>
+                <input
+                  type="number"
+                  step="500"
+                  min="0"
+                  value={formData.caution_fcfa}
+                  onChange={(e) => setFormData({...formData, caution_fcfa: e.target.value})}
+                  placeholder={i18n.language === 'fr' ? 'Vide ou 0 = paiement en une fois' : 'Blank or 0 = single payment'}
+                  className="input-dark w-full px-4 py-2 rounded-md"
+                  data-testid="caution-input"
+                />
+                <p className="text-[10px] text-[#71717A] mt-1">
+                  {i18n.language === 'fr'
+                    ? "Laissez vide pour que le membre règle la totalité d'un coup. Sinon, il verse d'abord ce montant pour réserver sa place, puis le solde."
+                    : 'Leave blank so the member pays in full at once. Otherwise they pay this first to reserve their spot, then the balance.'}
                 </p>
               </div>
             </div>
@@ -3191,6 +3213,7 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
     // Comme le prix de gros, le taux de frais n'est pas renvoye par l'API.
     // Laisse vide, il n'est pas envoye et la valeur en base reste inchangee.
     service_fee_percent: '',
+    caution_fcfa: groupage.caution_fcfa ?? '',
     suggested_resale_price_fcfa: groupage.suggested_resale_price_fcfa ?? ''
   });
 
@@ -3256,6 +3279,7 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
       max_members: parseInt(form.max_members),
       local_price_fcfa: parseFloat(form.local_price_fcfa) || 0,
       member_unit_price_fcfa: form.member_unit_price_fcfa === '' ? null : parseFloat(form.member_unit_price_fcfa),
+      caution_fcfa: form.caution_fcfa === '' ? null : parseFloat(form.caution_fcfa),
       solo_unit_price_fcfa: form.solo_unit_price_fcfa === '' ? null : parseFloat(form.solo_unit_price_fcfa),
       // Laisse vide = on n'y touche pas (ces champs internes ne sont jamais relus depuis l'API)
       ...(form.wholesale_unit_price_fcfa ? { wholesale_unit_price_fcfa: parseFloat(form.wholesale_unit_price_fcfa) } : {}),
@@ -3490,6 +3514,15 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
               <input type="number" step="0.5" min="0" max="20" value={form.service_fee_percent}
                 onChange={(e) => set({ service_fee_percent: e.target.value })}
                 placeholder={fr ? 'Laisser vide = inchangé (max 20)' : 'Leave blank = unchanged (max 20)'}
+                className="input-dark w-full px-4 py-2 rounded-md" />
+            </div>
+            <div>
+              <label className="block text-sm text-[#A1A1AA] mb-2">
+                {fr ? 'Caution (FCFA)' : 'Deposit (FCFA)'}
+              </label>
+              <input type="number" step="500" min="0" value={form.caution_fcfa}
+                onChange={(e) => set({ caution_fcfa: e.target.value })}
+                placeholder={fr ? '0 = paiement en une fois' : '0 = single payment'}
                 className="input-dark w-full px-4 py-2 rounded-md" />
             </div>
             <div>
