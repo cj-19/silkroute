@@ -5,14 +5,14 @@ import { Layout } from '@/components/Layout';
 import { useSeo } from '@/hooks/useSeo';
 import {
   Package, Truck, FileText, Upload, Loader2, CheckCircle,
-  MessageSquare, Star, Send, ChevronDown, ChevronUp
+  MessageSquare, Star, Send, ChevronDown, ChevronUp, Trash2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { api } from '@/lib/api';
 
 // Phases d'expedition, alignees sur SHIPMENT_PHASES cote backend.
-const PHASES = ['preparation', 'picked_up', 'in_transit', 'customs', 'arrived', 'delivered'];
+export const PHASES = ['preparation', 'picked_up', 'in_transit', 'customs', 'arrived', 'delivered'];
 
 const PHASE_LABELS = {
   fr: {
@@ -150,8 +150,10 @@ const PartnerGroupageCard = ({ groupage, isTransitaire, fr, onUpdated }) => {
   );
 };
 
-// --- Transitaire : mise a jour de phase ---
-const PhaseUpdateSection = ({ groupage, fr, onUpdated }) => {
+// --- Mise a jour de phase (transitaire sur ses groupages, admin sur tous) ---
+// `basePath` permet de reutiliser ce bloc depuis l'admin, qui appelle
+// /admin/groupages/... au lieu de /partner/groupages/...
+export const PhaseUpdateSection = ({ groupage, fr, onUpdated, basePath = '/partner/groupages' }) => {
   const currentIdx = PHASES.indexOf(groupage.shipment_status || 'preparation');
   const [phase, setPhase] = useState(groupage.shipment_status || 'preparation');
   const [note, setNote] = useState('');
@@ -160,7 +162,7 @@ const PhaseUpdateSection = ({ groupage, fr, onUpdated }) => {
   const handleUpdate = async () => {
     setSaving(true);
     try {
-      await api.put(`/partner/groupages/${groupage.groupage_id}/phase`, { phase, note: note || null });
+      await api.put(`${basePath}/${groupage.groupage_id}/phase`, { phase, note: note || null });
       toast.success(fr ? 'Phase mise à jour!' : 'Phase updated!');
       setNote('');
       onUpdated();
@@ -243,10 +245,16 @@ const PhaseUpdateSection = ({ groupage, fr, onUpdated }) => {
 const DOC_TYPES_TRANSITAIRE = ['bl', 'packing_list', 'invoice', 'customs'];
 const DOC_TYPES_SUPPLIER = ['invoice', 'certificate', 'quality_report', 'other'];
 
-const DocumentUploadSection = ({ groupage, isTransitaire, fr, onUpdated }) => {
+export const DocumentUploadSection = ({
+  groupage, isTransitaire, fr, onUpdated,
+  basePath = '/partner/groupages',
+  // Seul l'admin dispose d'une route de suppression : ailleurs, pas de bouton.
+  allowDelete = false,
+}) => {
   const [docType, setDocType] = useState(isTransitaire ? 'bl' : 'invoice');
   const [file, setFile] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [deletingUrl, setDeletingUrl] = useState(null);
 
   const docTypes = isTransitaire ? DOC_TYPES_TRANSITAIRE : DOC_TYPES_SUPPLIER;
   const existingDocs = isTransitaire
@@ -282,7 +290,7 @@ const DocumentUploadSection = ({ groupage, isTransitaire, fr, onUpdated }) => {
         formData
       );
 
-      await api.post(`/partner/groupages/${groupage.groupage_id}/documents`, {
+      await api.post(`${basePath}/${groupage.groupage_id}/documents`, {
         doc_type: docType,
         url: uploadResponse.data.secure_url
       });
@@ -298,6 +306,22 @@ const DocumentUploadSection = ({ groupage, isTransitaire, fr, onUpdated }) => {
     }
   };
 
+  const handleDelete = async (url) => {
+    if (!window.confirm(fr
+      ? 'Retirer ce document ? Les membres ne le verront plus.'
+      : 'Remove this document? Members will no longer see it.')) return;
+    setDeletingUrl(url);
+    try {
+      await api.delete(`${basePath}/${groupage.groupage_id}/documents`, { params: { url } });
+      toast.success(fr ? 'Document retiré' : 'Document removed');
+      onUpdated();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setDeletingUrl(null);
+    }
+  };
+
   return (
     <div>
       <h4 className="font-medium mb-3 flex items-center gap-2">
@@ -308,19 +332,36 @@ const DocumentUploadSection = ({ groupage, isTransitaire, fr, onUpdated }) => {
       {existingDocs.length > 0 && (
         <div className="grid md:grid-cols-2 gap-2 mb-4">
           {existingDocs.map((doc, idx) => (
-            <a
+            <div
               key={idx}
-              href={doc.url}
-              target="_blank"
-              rel="noopener noreferrer"
               className="flex items-center gap-2 bg-[#0A0A0A] border border-[#2A2A2A] rounded-md px-3 py-2 text-sm hover:border-[#D4AF37] transition-colors"
             >
-              <FileText className="w-4 h-4 text-[#D4AF37]" />
-              <span className="uppercase">{doc.doc_type}</span>
-              <span className="text-xs text-[#71717A] ml-auto">
-                {doc.uploaded_at && new Date(doc.uploaded_at).toLocaleDateString(fr ? 'fr-FR' : 'en-US')}
-              </span>
-            </a>
+              <a
+                href={doc.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 flex-1 min-w-0"
+              >
+                <FileText className="w-4 h-4 text-[#D4AF37] shrink-0" />
+                <span className="uppercase truncate">{doc.doc_type}</span>
+                <span className="text-xs text-[#71717A] ml-auto shrink-0">
+                  {doc.uploaded_at && new Date(doc.uploaded_at).toLocaleDateString(fr ? 'fr-FR' : 'en-US')}
+                </span>
+              </a>
+              {allowDelete && (
+                <button
+                  type="button"
+                  onClick={() => handleDelete(doc.url)}
+                  disabled={deletingUrl === doc.url}
+                  className="text-[#71717A] hover:text-[#EF4444] transition-colors shrink-0 disabled:opacity-40"
+                  aria-label={fr ? 'Retirer ce document' : 'Remove this document'}
+                >
+                  {deletingUrl === doc.url
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Trash2 className="w-4 h-4" />}
+                </button>
+              )}
+            </div>
           ))}
         </div>
       )}

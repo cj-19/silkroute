@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
 import os
 import math
 import logging
@@ -395,6 +396,7 @@ class GroupageCreate(BaseModel):
 class GroupageResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     groupage_id: str
+    reference: Optional[str] = None  # SR-0001 : identifiant lisible, cote humain
     title: str
     title_en: str
     description: str
@@ -518,6 +520,43 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+async def next_groupage_reference() -> str:
+    """Reference courte et lisible d'un groupage (SR-0001, SR-0002...).
+
+    Le groupage_id reste l'identifiant technique ; cette reference existe pour
+    qu'on puisse distinguer et nommer a l'oral deux groupages portant sur le
+    MEME produit ("le SR-0042"). Le compteur est incremente atomiquement en
+    base : deux creations simultanees ne peuvent pas obtenir le meme numero.
+    """
+    counter = await db.counters.find_one_and_update(
+        {"_id": "groupage_reference"},
+        {"$inc": {"value": 1}},
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return f"SR-{counter['value']:04d}"
+
+async def backfill_groupage_references() -> int:
+    """Attribue une reference aux groupages crees avant l'introduction du champ.
+    Idempotent : les groupages qui en ont deja une ne sont pas touches."""
+    missing = await db.groupages.find(
+        {"$or": [{"reference": {"$exists": False}}, {"reference": None}]},
+        {"_id": 0, "groupage_id": 1}
+    ).sort("created_at", 1).to_list(1000)
+
+    assigned = 0
+    for g in missing:
+        reference = await next_groupage_reference()
+        # Le filtre re-verifie l'absence de reference : si un autre process en a
+        # attribue une entre-temps, on ne l'ecrase pas.
+        result = await db.groupages.update_one(
+            {"groupage_id": g["groupage_id"],
+             "$or": [{"reference": {"$exists": False}}, {"reference": None}]},
+            {"$set": {"reference": reference}}
+        )
+        assigned += result.modified_count
+    return assigned
 
 def get_transport_price_per_kg_fcfa(groupage: dict) -> float:
     """Prix transport au kg en FCFA. Les nouvelles fiches transitaires stockent
@@ -2315,6 +2354,9 @@ async def create_groupage(groupage_data: GroupageCreate, user: dict = Depends(re
 
     groupage_doc = {
         "groupage_id": groupage_id,
+        # Reference courte affichee partout : distingue deux groupages portant
+        # sur le meme produit. Attribuee une fois, jamais modifiee ensuite.
+        "reference": await next_groupage_reference(),
         "title": groupage_data.title,
         "title_en": groupage_data.title_en,
         "description": groupage_data.description,
@@ -2478,13 +2520,64 @@ async def add_logistics_document(groupage_id: str, doc: LogisticsDocument, user:
     doc_data = doc.model_dump()
     doc_data["uploaded_at"] = datetime.now(timezone.utc).isoformat()
     doc_data["uploaded_by"] = user["user_id"]
-    
+
     await db.groupages.update_one(
         {"groupage_id": groupage_id},
         {"$push": {"logistics_documents": doc_data}}
     )
-    
+
     return {"message": "Document added"}
+
+@api_router.put("/admin/groupages/{groupage_id}/phase")
+async def admin_update_shipment_phase(groupage_id: str, update: PhaseUpdate,
+                                      user: dict = Depends(require_admin)):
+    """L'admin fait avancer la phase d'expedition de n'importe quel groupage.
+
+    Le transitaire dispose de la meme possibilite sur SES groupages
+    (/partner/groupages/{id}/phase) ; l'admin n'est pas limite par cette
+    appartenance, mais l'historique enregistre qui a fait la mise a jour.
+    """
+    if update.phase not in SHIPMENT_PHASES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid phase. Must be one of: {', '.join(SHIPMENT_PHASES)}"
+        )
+
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+
+    timeline_entry = {
+        "phase": update.phase,
+        "note": update.note,
+        "updated_by": user["user_id"],
+        "updated_by_name": user.get("name", "Admin"),
+        "updated_by_role": "admin",
+        "at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.groupages.update_one(
+        {"groupage_id": groupage_id},
+        {"$set": {"shipment_status": update.phase}, "$push": {"shipment_timeline": timeline_entry}}
+    )
+    return {"message": "Phase updated", "shipment_status": update.phase, "timeline_entry": timeline_entry}
+
+@api_router.delete("/admin/groupages/{groupage_id}/documents")
+async def admin_delete_logistics_document(groupage_id: str, url: str,
+                                          user: dict = Depends(require_admin)):
+    """Retire un document logistique, identifie par son URL.
+
+    Necessaire pour corriger un mauvais envoi : sans cela un document errone
+    resterait visible des membres pour toujours.
+    """
+    result = await db.groupages.update_one(
+        {"groupage_id": groupage_id},
+        {"$pull": {"logistics_documents": {"url": url}}}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Document not found on this groupage")
+    return {"message": "Document removed"}
 
 @api_router.get("/admin/warnings")
 async def get_warnings(user: dict = Depends(require_admin)):
@@ -2825,6 +2918,18 @@ async def add_security_headers(request: Request, call_next):
 
 socket_app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app, socketio_path='/api/socket.io')
 app = socket_app
+
+@fastapi_app.on_event("startup")
+async def assign_missing_references():
+    """Attribue une reference SR-xxxx aux groupages anterieurs a ce champ.
+    Idempotent : au deuxieme demarrage il n'y a plus rien a faire."""
+    try:
+        assigned = await backfill_groupage_references()
+        if assigned:
+            logger.info(f"References attribuees a {assigned} groupage(s) existant(s)")
+    except Exception as exc:
+        # Ne jamais empecher le demarrage pour un backfill cosmetique
+        logger.warning(f"Backfill des references impossible : {exc}")
 
 @fastapi_app.on_event("shutdown")
 async def shutdown_db_client():

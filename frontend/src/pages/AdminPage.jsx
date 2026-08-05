@@ -12,6 +12,9 @@ import {
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import ImageDropZone from '@/components/ImageDropZone';
+// Les blocs de suivi sont partages avec le portail transitaire : meme UI,
+// seule la route appelee change (basePath).
+import { PHASES, phaseLabel, PhaseUpdateSection, DocumentUploadSection } from '@/pages/PartnerPage';
 
 const AdminPage = () => {
   useSeo({ title: 'Administration | SilkRoute', path: '/admin', noindex: true });
@@ -23,6 +26,7 @@ const AdminPage = () => {
     { path: '/admin', label: t('admin.overview'), icon: LayoutDashboard },
     { path: '/admin/warnings', label: t('admin.warnings'), icon: AlertTriangle },
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
+    { path: '/admin/tracking', label: i18n.language === 'fr' ? 'Suivi & documents' : 'Tracking & documents', icon: Truck },
     { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
     { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield },
     { path: '/admin/users', label: i18n.language === 'fr' ? 'Utilisateurs' : 'Users', icon: Users },
@@ -64,6 +68,7 @@ const AdminPage = () => {
               <Route index element={<AdminOverview />} />
               <Route path="warnings" element={<AdminWarnings />} />
               <Route path="groupages" element={<AdminGroupages />} />
+              <Route path="tracking" element={<AdminTracking />} />
               <Route path="proposals" element={<AdminProposals />} />
               <Route path="kyc" element={<AdminKYC />} />
               <Route path="users" element={<AdminUsers />} />
@@ -133,6 +138,155 @@ const AdminOverview = () => {
           icon={LayoutDashboard}
         />
       </div>
+    </div>
+  );
+};
+
+// --- Suivi des expeditions : phases + documents, groupage par groupage ---
+// L'admin peut agir sur TOUS les groupages, la ou le transitaire est limite
+// aux siens depuis le portail partenaire.
+const AdminTracking = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [groupages, setGroupages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState(null);
+  const [search, setSearch] = useState('');
+  const [phaseFilter, setPhaseFilter] = useState('');
+
+  const fetchGroupages = async () => {
+    try {
+      const response = await api.get('/groupages?limit=200');
+      setGroupages(response.data);
+    } catch (error) {
+      toast.error(fr ? 'Chargement impossible' : 'Failed to load');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchGroupages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const q = search.trim().toLowerCase();
+  const visibles = groupages.filter(g => {
+    if (phaseFilter && (g.shipment_status || 'preparation') !== phaseFilter) return false;
+    if (!q) return true;
+    return [g.reference, g.title, g.title_en, g.transitaire_name]
+      .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+  });
+
+  if (loading) {
+    return <div className="flex justify-center py-20"><Loader2 className="w-8 h-8 animate-spin text-[#D4AF37]" /></div>;
+  }
+
+  return (
+    <div data-testid="admin-tracking">
+      <h1 className="font-['Bebas_Neue'] text-4xl mb-2">
+        {fr ? 'Suivi & documents' : 'Tracking & documents'}
+      </h1>
+      <p className="text-[#A1A1AA] mb-6">
+        {fr
+          ? "Faites avancer les étapes d'expédition et joignez les documents. Chaque changement est horodaté et visible par les membres."
+          : 'Advance shipment phases and attach documents. Every change is timestamped and visible to members.'}
+      </p>
+
+      <div className="grid md:grid-cols-2 gap-3 mb-6">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={fr ? 'Rechercher : référence, titre, transitaire…' : 'Search: reference, title, forwarder…'}
+          className="input-dark px-4 py-2 rounded-md"
+          data-testid="tracking-search"
+        />
+        <select
+          value={phaseFilter}
+          onChange={(e) => setPhaseFilter(e.target.value)}
+          className="input-dark px-4 py-2 rounded-md"
+        >
+          <option value="">{fr ? 'Toutes les étapes' : 'All phases'}</option>
+          {PHASES.map(p => (
+            <option key={p} value={p}>{phaseLabel(p, fr ? 'fr' : 'en')}</option>
+          ))}
+        </select>
+      </div>
+
+      {visibles.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-10 text-center text-[#71717A]">
+          {groupages.length === 0
+            ? (fr ? 'Aucun groupage pour le moment.' : 'No groupages yet.')
+            : (fr ? 'Aucun groupage ne correspond à cette recherche.' : 'No groupage matches this search.')}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {visibles.map(g => {
+            const phase = g.shipment_status || 'preparation';
+            const idx = PHASES.indexOf(phase);
+            const nbDocs = (g.logistics_documents || []).length;
+            const ouvert = expandedId === g.groupage_id;
+            return (
+              <div key={g.groupage_id} className="bg-[#141414] border border-[#2A2A2A] rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setExpandedId(ouvert ? null : g.groupage_id)}
+                  className="w-full flex items-center gap-3 p-4 text-left hover:bg-[#1A1A1A] transition-colors"
+                >
+                  <span className="font-mono text-xs text-[#D4AF37] bg-[#D4AF37]/10 px-2 py-1 rounded shrink-0">
+                    {g.reference || '—'}
+                  </span>
+                  <span className="flex-1 min-w-0 truncate font-medium">
+                    {fr ? g.title : (g.title_en || g.title)}
+                  </span>
+                  <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${
+                    phase === 'delivered' ? 'bg-[#22C55E]/20 text-[#22C55E]' : 'bg-[#D4AF37]/15 text-[#D4AF37]'
+                  }`}>
+                    {phaseLabel(phase, fr ? 'fr' : 'en')}
+                  </span>
+                  <span className="text-xs text-[#71717A] whitespace-nowrap hidden sm:inline">
+                    {idx + 1}/{PHASES.length} · {nbDocs} doc{nbDocs > 1 ? 's' : ''}
+                  </span>
+                  {ouvert ? <ChevronRight className="w-4 h-4 rotate-90 shrink-0" /> : <ChevronRight className="w-4 h-4 shrink-0" />}
+                </button>
+
+                {ouvert && (
+                  <div className="border-t border-[#2A2A2A] p-4 space-y-6">
+                    <div className="text-xs text-[#71717A] flex flex-wrap gap-x-4 gap-y-1">
+                      <span>{fr ? 'Transitaire' : 'Forwarder'} : {g.transitaire_name || '—'}</span>
+                      <span>{fr ? 'Membres' : 'Members'} : {g.current_members ?? 0}</span>
+                      <a
+                        href={`/groupages/${g.groupage_id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#D4AF37] hover:underline inline-flex items-center gap-1"
+                      >
+                        {fr ? 'Voir la page' : 'View page'} <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+
+                    <PhaseUpdateSection
+                      groupage={g}
+                      fr={fr}
+                      onUpdated={fetchGroupages}
+                      basePath="/admin/groupages"
+                    />
+
+                    <DocumentUploadSection
+                      groupage={g}
+                      isTransitaire
+                      fr={fr}
+                      onUpdated={fetchGroupages}
+                      basePath="/admin/groupages"
+                      allowDelete
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };
@@ -326,7 +480,15 @@ const AdminGroupages = () => {
           <tbody>
             {groupages.map(groupage => (
               <tr key={groupage.groupage_id}>
-                <td>{groupage.title}</td>
+                <td>
+                  {/* La reference distingue deux groupages du meme produit */}
+                  {groupage.reference && (
+                    <span className="font-mono text-[11px] text-[#D4AF37] bg-[#D4AF37]/10 px-1.5 py-0.5 rounded mr-2">
+                      {groupage.reference}
+                    </span>
+                  )}
+                  {groupage.title}
+                </td>
                 <td>
                   <span className={`badge-${groupage.status === 'open' ? 'success' : groupage.status === 'closed' ? 'warning' : 'gold'} px-2 py-1 rounded text-xs`}>
                     {t(`groupages.status.${groupage.status}`)}

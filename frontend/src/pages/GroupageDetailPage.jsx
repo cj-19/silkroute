@@ -331,6 +331,14 @@ const GroupageDetailPage = () => {
               <h1 className="font-['Bebas_Neue'] text-3xl mb-2">
                 {getLocalizedText(groupage, 'title')}
               </h1>
+
+              {/* Reference : permet de designer sans ambiguite ce groupage
+                  precis quand plusieurs portent sur le meme produit. */}
+              {groupage.reference && (
+                <p className="font-mono text-xs text-[#71717A] mb-2">
+                  {i18n.language === 'fr' ? 'Réf.' : 'Ref.'} {groupage.reference}
+                </p>
+              )}
               
               <p className="text-[#A1A1AA] text-sm mb-6">
                 {getLocalizedText(groupage, 'description')}
