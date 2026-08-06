@@ -1249,39 +1249,76 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
 // --- Choix du moyen de paiement ---
 // Le mobile money passe en premier : la majorite des acheteurs n'ont pas de
 // carte bancaire. Tara renvoie plusieurs liens, on expose les plus utiles.
+// Deux moyens Tara distincts, chacun sa route :
+//  - mobile money (/mobilepay) : le client tape son numero, recoit un push
+//    USSD, reste sur cette page. On interroge notre propre statut en boucle.
+//  - carte (/paymentlinks, cardLink uniquement) : ouvre un lien externe Tara,
+//    seul canal utilisable depuis n'importe quel pays (Stripe n'opere pas au
+//    Cameroun). Meme suivi de statut, car il n'y a pas de retour automatique.
 const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
-  const [chargement, setChargement] = useState(true);
-  const [paiement, setPaiement] = useState(null);
+  const [etape, setEtape] = useState('choix'); // choix | telephone | attente | succes
+  const [methode, setMethode] = useState(null); // 'mobile_money' | 'card'
+  const [telephone, setTelephone] = useState('');
+  const [envoi, setEnvoi] = useState(false);
   const [erreur, setErreur] = useState(null);
-  const [carteEnCours, setCarteEnCours] = useState(false);
+  const [paiement, setPaiement] = useState(null); // {payment_id, amount_fcfa, vendor?, card_link?}
 
+  // Sondage du statut : c'est notre propre enregistrement (mis a jour par le
+  // webhook Tara) qui fait foi, pas un retour de page.
   useEffect(() => {
-    let annule = false;
-    api.post('/payments/tara/checkout', { groupage_id: groupageId, payment_type: paymentType })
-      .then(res => { if (!annule) setPaiement(res.data); })
-      .catch(err => {
-        if (!annule) setErreur(err.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
-      })
-      .finally(() => { if (!annule) setChargement(false); });
-    return () => { annule = true; };
-  }, [groupageId, paymentType, fr]);
+    if (etape !== 'attente' || !paiement?.payment_id) return undefined;
+    const id = setInterval(async () => {
+      try {
+        const res = await api.get(`/payments/tara/status/${paiement.payment_id}`);
+        if (res.data.status === 'completed') { clearInterval(id); setEtape('succes'); }
+        else if (res.data.status === 'failed') {
+          clearInterval(id);
+          setErreur(fr ? "Le paiement n'a pas abouti. Réessayez." : 'The payment did not go through. Please retry.');
+          setEtape('choix');
+        }
+      } catch { /* on retente au prochain intervalle */ }
+    }, 4000);
+    return () => clearInterval(id);
+  }, [etape, paiement, fr]);
 
-  const payerParCarte = async () => {
-    setCarteEnCours(true);
+  const payerMobileMoney = async () => {
+    const digits = telephone.replace(/\D/g, '');
+    if (digits.length < 9) {
+      setErreur(fr ? 'Numéro invalide.' : 'Invalid phone number.');
+      return;
+    }
+    setEnvoi(true);
+    setErreur(null);
     try {
-      const res = await api.post('/payments/checkout', {
+      const res = await api.post('/payments/tara/mobilepay', {
         groupage_id: groupageId,
         payment_type: paymentType,
-        origin_url: window.location.origin
+        phone_number: digits.startsWith('237') ? digits : `237${digits}`,
       });
-      window.location.href = res.data.url;
+      setPaiement(res.data);
+      setEtape('attente');
     } catch (error) {
-      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
-      setCarteEnCours(false);
+      setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setEnvoi(false);
     }
   };
 
-  const canaux = paiement?.links || {};
+  const payerParCarte = async () => {
+    setEnvoi(true);
+    setErreur(null);
+    try {
+      const res = await api.post('/payments/tara/card', { groupage_id: groupageId, payment_type: paymentType });
+      setPaiement(res.data);
+      window.open(res.data.card_link, '_blank', 'noopener,noreferrer');
+      setEtape('attente');
+    } catch (error) {
+      setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
   const montant = paiement?.amount_fcfa
     ? new Intl.NumberFormat('fr-FR').format(paiement.amount_fcfa) + ' FCFA'
     : null;
@@ -1300,68 +1337,102 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
               : (fr ? 'Votre part dans ce groupage, en une seule fois.' : 'Your share in this groupage, in a single payment.')}
         </p>
 
-        {chargement && (
-          <div className="flex justify-center py-8">
-            <Loader2 className="w-6 h-6 animate-spin text-[#D4AF37]" />
-          </div>
-        )}
-
         {erreur && (
           <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded-md p-3 text-sm text-[#EF4444] mb-4">
             {erreur}
           </div>
         )}
 
-        {!chargement && (
+        {etape === 'choix' && (
           <div className="space-y-2">
-            {canaux.whatsapp && (
-              <a href={canaux.whatsapp} target="_blank" rel="noopener noreferrer"
-                 className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2"
-                 data-testid="pay-whatsapp">
-                <MessageCircle className="w-4 h-4" />
-                {fr ? 'Payer via WhatsApp' : 'Pay via WhatsApp'}
-              </a>
-            )}
-            {canaux.general && (
-              <a href={canaux.general} target="_blank" rel="noopener noreferrer"
-                 className="btn-outline w-full px-4 py-3 rounded-md flex items-center justify-center gap-2">
-                <ExternalLink className="w-4 h-4" />
-                {fr ? 'Mobile Money (MTN / Orange)' : 'Mobile Money (MTN / Orange)'}
-              </a>
-            )}
-            {canaux.card && (
-              <a href={canaux.card} target="_blank" rel="noopener noreferrer"
-                 className="btn-outline w-full px-4 py-3 rounded-md flex items-center justify-center gap-2">
-                <CreditCard className="w-4 h-4" />
-                {fr ? 'Carte bancaire' : 'Bank card'}
-              </a>
-            )}
-            {canaux.telegram && (
-              <a href={canaux.telegram} target="_blank" rel="noopener noreferrer"
-                 className="text-xs text-[#71717A] hover:text-[#D4AF37] block text-center pt-1">
-                {fr ? 'Payer via Telegram' : 'Pay via Telegram'}
-              </a>
-            )}
-
-            {/* Repli si Tara n'a rien renvoye (non configure, ou en panne) */}
-            {!canaux.whatsapp && !canaux.general && (
-              <button onClick={payerParCarte} disabled={carteEnCours}
-                      className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2 disabled:opacity-50">
-                {carteEnCours ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
-                {fr ? 'Payer par carte' : 'Pay by card'}
-              </button>
-            )}
+            <button
+              onClick={() => { setMethode('mobile_money'); setEtape('telephone'); setErreur(null); }}
+              className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2"
+              data-testid="pay-mobile-money"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {fr ? 'Mobile Money (MTN / Orange)' : 'Mobile Money (MTN / Orange)'}
+            </button>
+            <button
+              onClick={() => { setMethode('card'); payerParCarte(); }}
+              disabled={envoi}
+              className="btn-outline w-full px-4 py-3 rounded-md flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="pay-card"
+            >
+              {envoi && methode === 'card' ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+              {fr ? 'Carte bancaire' : 'Bank card'}
+            </button>
           </div>
         )}
 
-        <p className="text-[11px] text-[#71717A] mt-4">
-          {fr
-            ? "Votre paiement est confirmé automatiquement dès que Tara nous le signale. Si le statut tarde, il se met à jour tout seul — inutile de payer deux fois."
-            : 'Your payment is confirmed automatically once Tara notifies us. If the status lags, it updates on its own — no need to pay twice.'}
-        </p>
+        {etape === 'telephone' && (
+          <div className="space-y-3">
+            <label className="block text-sm text-[#A1A1AA]">
+              {fr ? 'Numéro Mobile Money' : 'Mobile Money number'}
+            </label>
+            <input
+              type="tel"
+              value={telephone}
+              onChange={(e) => setTelephone(e.target.value)}
+              placeholder="6XXXXXXXX"
+              className="input-dark w-full px-4 py-2 rounded-md"
+              data-testid="phone-input"
+              autoFocus
+            />
+            <button
+              onClick={payerMobileMoney}
+              disabled={envoi}
+              className="btn-gold w-full px-4 py-3 rounded-md flex items-center justify-center gap-2 disabled:opacity-50"
+              data-testid="submit-phone"
+            >
+              {envoi ? <Loader2 className="w-4 h-4 animate-spin" /> : <CreditCard className="w-4 h-4" />}
+              {fr ? 'Recevoir la demande de paiement' : 'Send payment request'}
+            </button>
+            <button onClick={() => setEtape('choix')} className="text-xs text-[#71717A] hover:text-[#D4AF37] block mx-auto">
+              {fr ? '← Changer de moyen de paiement' : '← Change payment method'}
+            </button>
+          </div>
+        )}
+
+        {etape === 'attente' && (
+          <div className="text-center py-6">
+            <Loader2 className="w-8 h-8 animate-spin text-[#D4AF37] mx-auto mb-4" />
+            {methode === 'mobile_money' ? (
+              <>
+                <p className="font-medium mb-1">
+                  {fr ? 'Composez le code reçu sur votre téléphone' : 'Dial the code sent to your phone'}
+                </p>
+                <p className="text-sm text-[#71717A]">
+                  {paiement?.vendor?.includes('ORANGE')
+                    ? 'Orange Money'
+                    : paiement?.vendor?.includes('MTN')
+                      ? 'MTN Mobile Money'
+                      : ''}
+                  {' '}{fr ? 'et entrez votre code secret.' : '— enter your PIN.'}
+                </p>
+              </>
+            ) : (
+              <p className="font-medium mb-1">
+                {fr
+                  ? 'Terminez le paiement dans l\'onglet ouvert, puis revenez ici.'
+                  : 'Complete the payment in the tab that opened, then come back here.'}
+              </p>
+            )}
+            <p className="text-xs text-[#71717A] mt-3">
+              {fr ? 'Cette page se met à jour automatiquement.' : 'This page updates automatically.'}
+            </p>
+          </div>
+        )}
+
+        {etape === 'succes' && (
+          <div className="text-center py-6">
+            <CheckCircle className="w-10 h-10 text-[#22C55E] mx-auto mb-3" />
+            <p className="font-medium">{fr ? 'Paiement confirmé !' : 'Payment confirmed!'}</p>
+          </div>
+        )}
 
         <button onClick={onClose} className="btn-outline w-full px-4 py-2 rounded-md mt-4">
-          {fr ? 'Fermer' : 'Close'}
+          {etape === 'succes' ? (fr ? 'Continuer' : 'Continue') : (fr ? 'Fermer' : 'Close')}
         </button>
       </div>
     </div>

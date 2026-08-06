@@ -564,7 +564,8 @@ const CashFlowModal = ({ fr, onClose, onSaved }) => {
     direction: 'out', amount: '', currency: 'XAF', account: 'reasy',
     category: 'supplier_payment', status: 'confirmed',
     occurred_at: new Date().toISOString().slice(0, 10),
-    groupage_id: '', reference: '', note: '', proof_url: ''
+    groupage_id: '', reference: '', note: '', proof_url: '',
+    platform_fee_fcfa: '', platform_fee_percent: ''
   });
   const set = (patch) => setForm({ ...form, ...patch });
 
@@ -595,6 +596,8 @@ const CashFlowModal = ({ fr, onClose, onSaved }) => {
         note: form.note || null,
         proof_url: form.proof_url || null,
         occurred_at: new Date(form.occurred_at).toISOString(),
+        platform_fee_fcfa: form.platform_fee_fcfa === '' ? null : parseFloat(form.platform_fee_fcfa),
+        platform_fee_percent: form.platform_fee_percent === '' ? null : parseFloat(form.platform_fee_percent),
       });
       toast.success(fr ? 'Mouvement enregistré' : 'Entry recorded');
       onSaved();
@@ -676,6 +679,29 @@ const CashFlowModal = ({ fr, onClose, onSaved }) => {
             <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Référence externe' : 'External reference'}</label>
             <input type="text" value={form.reference} onChange={(e) => set({ reference: e.target.value })}
               placeholder={fr ? 'N° de transaction REasy / Tara' : 'REasy / Tara transaction no.'}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+          {/* REasy n'a pas de taux fixe : a saisir a chaque transaction pour
+              garder une vision reelle du cout, pas juste le montant transfere. */}
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">
+              {fr ? 'Frais prélevés (FCFA)' : 'Fee charged (FCFA)'}
+              {form.account === 'reasy' && (
+                <span className="ml-2 text-[10px] text-[#F97316]">
+                  {fr ? 'taux REasy variable' : 'REasy rate varies'}
+                </span>
+              )}
+            </label>
+            <input type="number" step="1" min="0" value={form.platform_fee_fcfa}
+              onChange={(e) => set({ platform_fee_fcfa: e.target.value })}
+              placeholder={fr ? 'Optionnel' : 'Optional'}
+              className="input-dark w-full px-4 py-2 rounded-md" />
+          </div>
+          <div>
+            <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Taux (%)' : 'Rate (%)'}</label>
+            <input type="number" step="0.1" min="0" max="100" value={form.platform_fee_percent}
+              onChange={(e) => set({ platform_fee_percent: e.target.value })}
+              placeholder={fr ? 'Optionnel' : 'Optional'}
               className="input-dark w-full px-4 py-2 rounded-md" />
           </div>
           <div>
