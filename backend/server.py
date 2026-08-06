@@ -137,7 +137,7 @@ SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
 #    Le client reste sur notre page. Webhook documente avec precision.
 #  - /paymentlinks : genere un lien externe. On n'utilise QUE cardLink (carte
 #    bancaire, seul canal utilisable depuis n'importe quel pays - Stripe
-#    n'opere pas au Cameroun). Son webhook n'est PAS documente.
+#    n'opere pas au Cameroun). Webhook desormais documente lui aussi.
 TARA_MOBILEPAY_URL = os.environ.get("TARA_MOBILEPAY_URL", "https://www.dklo.co/api/tara/mobilepay")
 TARA_PAYMENTLINKS_URL = os.environ.get("TARA_PAYMENTLINKS_URL", "https://www.dklo.co/api/tara/paymentlinks")
 TARA_API_KEY = os.environ.get("TARA_API_KEY")
@@ -2439,9 +2439,10 @@ async def create_tara_card_payment(data: TaraMobilePayCreate, request: Request,
     """Genere un lien de paiement carte (Visa/Mastercard) via Tara, seul canal
     utilisable depuis un pays quelconque - Stripe n'opere pas au Cameroun.
 
-    Le format du webhook /paymentlinks n'est PAS documente (contrairement a
-    /mobilepay) : payment_id reste encode dans l'URL pour la correlation, et
-    la lecture du statut cote webhook reste tolerante a plusieurs noms de champs.
+    Le webhook /paymentlinks est documente : {businessId, status, amount,
+    paymentId, productId, collectionId, creationDate, changeDate}. payment_id
+    reste toutefois tire de l'URL plutot que de productId, pour garder une
+    correlation identique quel que soit le moyen de paiement.
     """
     if not TARA_API_KEY or not TARA_BUSINESS_ID:
         raise HTTPException(status_code=503, detail="Tara Money n'est pas configure sur ce serveur")
@@ -2520,12 +2521,19 @@ def _tara_status_is_success(payload: dict) -> Optional[bool]:
 
 @api_router.post("/webhook/tara/{secret}/{payment_id}")
 async def tara_webhook(secret: str, payment_id: str, request: Request):
-    """Confirmation de paiement envoyee par Tara, pour /mobilepay ET /paymentlinks
-    (carte). payment_id vient de l'URL, pas du corps : aucun des deux formats de
-    webhook ne renvoie de facon fiable notre identifiant.
+    """Confirmation de paiement envoyee par Tara, pour /mobilepay ET
+    /paymentlinks (carte). Les deux formats sont desormais documentes :
+      - mobilepay : {businessId, paymentId, collectionId, phoneNumber,
+        creationDate, changeDate, status}
+      - carte     : {businessId, status, amount, paymentId, productId,
+        collectionId, creationDate, changeDate}
+    Seul le webhook carte renvoie productId - c'est pourquoi payment_id reste
+    tire de l'URL (fiable dans les deux cas), productId n'etant verifie qu'a
+    titre de recoupement supplementaire quand il est present.
 
-    ATTENTION : la doc Tara ne prevoit aucune signature. Le secret dans l'URL
-    est donc la seule authentification, compare en temps constant.
+    ATTENTION : aucun mecanisme de signature confirme a ce jour. Le secret
+    dans l'URL est donc l'authentification principale, comparee en temps
+    constant.
     """
     if not TARA_WEBHOOK_SECRET or not secrets.compare_digest(secret, TARA_WEBHOOK_SECRET):
         raise HTTPException(status_code=404, detail="Not found")
@@ -2552,6 +2560,28 @@ async def tara_webhook(secret: str, payment_id: str, request: Request):
         )
         logger.warning(f"Tara reported a non-successful payment {payment_id}: {payload}")
         return {"received": True, "handled": True, "settled": False}
+
+    # Le webhook carte (documente) renvoie amount et productId : on les
+    # verifie quand ils sont presents. Le webhook mobile money ne les fournit
+    # pas - dans ce cas on se fie a payment_id, deja garanti par le secret
+    # dans l'URL.
+    montant_annonce = payload.get("amount")
+    if montant_annonce not in (None, ""):
+        try:
+            if abs(float(montant_annonce) - float(payment["amount"])) > 1:
+                logger.error(
+                    f"Tara webhook amount mismatch for {payment_id}: "
+                    f"annonce={montant_annonce} attendu={payment['amount']}"
+                )
+                return {"received": True, "handled": False, "reason": "amount_mismatch"}
+        except (TypeError, ValueError):
+            pass  # montant illisible : on ignore plutot que de bloquer un vrai paiement
+
+    product_id = payload.get("productId")
+    if product_id and product_id != payment_id:
+        # Ne bloque pas le paiement (l'URL a deja fait foi) mais un ecart ici
+        # serait anormal et merite d'etre regarde.
+        logger.warning(f"Tara webhook productId ({product_id}) != payment_id ({payment_id}) in URL")
 
     await db.payment_transactions.update_one(
         {"payment_id": payment_id},
