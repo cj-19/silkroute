@@ -126,9 +126,6 @@ def service_fee_fcfa(member_share_fcfa: float, percent: float = None) -> float:
     return max(SERVICE_FEE_MIN_FCFA, member_share_fcfa * percent / 100)
 
 MIN_GROUPAGE_TOTAL_FCFA = float(os.environ.get("MIN_GROUPAGE_TOTAL_FCFA", 25000))  # Total minimum (frais inclus) pour pouvoir rejoindre un groupage
-# Frais fixes estimes pour une commande en solo (dedouanement, agent, minimum
-# transitaire...). Ajustable via la variable d'environnement SOLO_FEE_FCFA.
-SOLO_FEE_FCFA = float(os.environ.get("SOLO_FEE_FCFA", 15000))
 
 # --- Tara Money (mobile money Cameroun) ---
 # Deux endpoints Tara, un par moyen de paiement. Montants en FCFA entier,
@@ -848,23 +845,22 @@ def get_solo_unit_price_fcfa(groupage: dict) -> float:
 
 def calculate_solo_price(unit_price_fcfa: float, quantity: int, per_item_transport_fcfa: float) -> dict:
     """
-    Calcul prix SEUL: Prix unitaire + frais fixes (SOLO_FEE_FCFA) + (transport unitaire × quantité)
+    Calcul prix SEUL: Prix unitaire + (transport unitaire x quantite).
     Le prix unitaire est attendu en FCFA, hors transport.
+
+    Pas de frais fixe ajoute : le dedouanement est gere par le transitaire,
+    pas par un agent distinct que l'acheteur seul paierait en plus.
     """
     total_unit_price = unit_price_fcfa * quantity
-
-    solo_fee_fcfa = SOLO_FEE_FCFA
-
     transport_cost_fcfa = per_item_transport_fcfa * quantity
 
-    total_solo = total_unit_price + solo_fee_fcfa + transport_cost_fcfa
+    total_solo = total_unit_price + transport_cost_fcfa
     price_per_unit_solo = total_solo / quantity if quantity > 0 else 0
-    
+
     return {
         "unit_price_fcfa": round(unit_price_fcfa, 0),
         "quantity": quantity,
         "subtotal_fcfa": round(total_unit_price, 0),
-        "solo_fee_fcfa": round(solo_fee_fcfa, 0),
         "transport_cost_fcfa": round(transport_cost_fcfa, 0),
         "total_fcfa": round(total_solo, 0),
         "price_per_unit_fcfa": round(price_per_unit_solo, 0)

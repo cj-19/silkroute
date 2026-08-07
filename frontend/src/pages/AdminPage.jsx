@@ -1836,6 +1836,38 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
               </div>
             </div>
 
+            {/* Ecart fournisseur : palier de gros vs petite quantite, AVANT marge,
+                transport et frais. C'est la remise que le fournisseur consent
+                reellement au volume — l'argument qui justifie le groupage.
+                Objectif interne : 15-20 %. Calcule en direct, visible ici seulement. */}
+            {formData.solo_unit_price_fcfa && formData.wholesale_unit_price_fcfa && (
+              (() => {
+                const detail = parseFloat(formData.solo_unit_price_fcfa);
+                const gros = parseFloat(formData.wholesale_unit_price_fcfa);
+                if (!(detail > 0) || !(gros > 0)) return null;
+                const ecart = detail - gros;
+                const pctEcart = (ecart / detail) * 100;
+                const atteint = pctEcart >= 15;
+                const fmt = (n) => new Intl.NumberFormat('fr-FR').format(Math.round(n));
+                return (
+                  <div className={`text-sm rounded-md px-3 py-2 mb-3 ${atteint ? 'bg-[#22C55E]/10 text-[#22C55E]' : 'bg-[#F97316]/10 text-[#F97316]'}`}>
+                    {i18n.language === 'fr' ? 'Écart fournisseur (gros vs détail)' : 'Supplier gap (bulk vs retail)'}
+                    {' : '}<strong>{pctEcart.toFixed(1)} %</strong>
+                    {' '}({fmt(ecart)} FCFA/unité)
+                    <span className="block text-[11px] mt-1 opacity-90">
+                      {atteint
+                        ? (i18n.language === 'fr'
+                            ? 'Objectif de 15-20 % atteint : cette quantité justifie le groupage.'
+                            : '15-20% target reached: this quantity justifies the groupage.')
+                        : (i18n.language === 'fr'
+                            ? `En dessous de l'objectif (15 %) : envisagez une quantité cible plus grande pour un meilleur palier.`
+                            : "Below target (15%): consider a larger target quantity for a better price tier.")}
+                    </span>
+                  </div>
+                );
+              })()
+            )}
+
             {/* Marge calculee en direct : uniquement visible ici, dans l'admin. */}
             {formData.wholesale_unit_price_fcfa && formData.member_unit_price_fcfa && (
               (() => {
