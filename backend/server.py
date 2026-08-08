@@ -2429,7 +2429,11 @@ async def create_tara_mobilepay(data: TaraMobilePayCreate, request: Request,
         await _mark_attempt_failed(payment_id, f"network_error: {exc}")
         raise HTTPException(status_code=502, detail="Impossible de lancer le paiement")
 
-    if tara.get("status") != "SUCCESS":
+    # Comparaison tolerante (voir _tara_status_is_success) : la reponse reelle
+    # de Tara a deja diverge de sa propre documentation sur la casse du champ
+    # status ("API_ORDER_SUCESSFULL" a ete rejete par une comparaison stricte
+    # a "SUCCESS" alors que c'etait un succes).
+    if _tara_status_is_success(tara) is not True:
         logger.warning(f"Tara mobilepay refused the request: {tara}")
         await _mark_attempt_failed(payment_id, tara.get("message") or "refused_by_tara")
         raise HTTPException(status_code=502, detail=tara.get("message") or "Tara a refuse la demande")
@@ -2492,7 +2496,7 @@ async def create_tara_card_payment(data: TaraCardPaymentCreate, request: Request
         raise HTTPException(status_code=502, detail="Impossible de generer le lien de paiement")
 
     card_link = tara.get("cardLink")
-    if tara.get("status") != "success" or not card_link:
+    if _tara_status_is_success(tara) is not True or not card_link:
         logger.warning(f"Tara paymentlinks did not return a card link: {tara}")
         await _mark_attempt_failed(payment_id, tara.get("message") or "no_card_link")
         raise HTTPException(status_code=502, detail=tara.get("message") or "Tara a refuse la demande")
