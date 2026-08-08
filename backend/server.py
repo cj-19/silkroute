@@ -23,6 +23,7 @@ import time
 import secrets
 from difflib import SequenceMatcher
 import re
+import unicodedata
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -2338,6 +2339,20 @@ async def _member_amount_due_fcfa(groupage_id: str, user_id: str, payment_type: 
         raise HTTPException(status_code=400, detail="Nothing left to pay on this groupage")
     return reste
 
+def _tara_safe_text(text: str) -> str:
+    """Translittere en ASCII pur pour le nom/la description envoyes a Tara.
+
+    Constate en test reel : les accents et le tiret cadratin ressortent en
+    mojibake sur leur page de paiement ("television" -> "tÃ©lÃ©vision",
+    tiret -> cases vides illisibles). Le probleme est cote Tara (encodage
+    mal gere quelque part dans leur chaine), pas dans ce qu'on leur envoie -
+    mais un client qui voit du charabia sur l'ecran de paiement perd
+    confiance, donc on neutralise a la source plutot que d'attendre un
+    correctif de leur part.
+    """
+    text = text.replace('—', '-').replace('–', '-').replace(''', "'").replace(''', "'")
+    return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+
 async def _start_payment_attempt(data, request: Request, user: dict, method: str) -> dict:
     """Prepare et JOURNALISE une tentative de paiement, avant tout appel a Tara.
 
@@ -2412,7 +2427,7 @@ async def create_tara_mobilepay(data: TaraMobilePayCreate, request: Request,
         "apiKey": TARA_API_KEY,
         "businessId": TARA_BUSINESS_ID,
         "productId": payment_id,
-        "productName": f"{libelle} — {reference}"[:80],
+        "productName": _tara_safe_text(f"{libelle} - {reference}"[:80]),
         "network": "",
         "productPrice": int(round(montant)),  # Tara attend un entier en FCFA
         "phoneNumber": data.phone_number,
@@ -2474,9 +2489,9 @@ async def create_tara_card_payment(data: TaraCardPaymentCreate, request: Request
         "apiKey": TARA_API_KEY,
         "businessId": TARA_BUSINESS_ID,
         "productId": payment_id,
-        "productName": f"{libelle} — {reference}"[:80],
+        "productName": _tara_safe_text(f"{libelle} - {reference}"[:80]),
         "productPrice": int(round(montant)),
-        "productDescription": f"{libelle} groupage {reference} — {groupage.get('title', '')}"[:200],
+        "productDescription": _tara_safe_text(f"{libelle} groupage {reference} - {groupage.get('title', '')}"[:200]),
         "webHookUrl": webhook_url,
     }
     if groupage.get("product_image_url"):
