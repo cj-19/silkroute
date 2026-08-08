@@ -600,6 +600,33 @@ CURRENCY_TO_FCFA = {
     "cny": float(CNY_TO_FCFA),
 }
 
+SITE_THEMES = ["light", "dark", "whatsapp"]
+
+class ThemeScheduleCreate(BaseModel):
+    """Periode pendant laquelle un theme devient celui par defaut du SITE (pas
+    la preference personnelle d'un visiteur, qui prime toujours - voir
+    GET /theme/active). Ex: theme "whatsapp" du 1er au 31 decembre."""
+    start_date: str  # "YYYY-MM-DD"
+    end_date: str    # "YYYY-MM-DD"
+    theme: str
+    label: Optional[str] = None  # ex: "Noel", pour s'y retrouver dans la liste
+
+    @field_validator("theme")
+    @classmethod
+    def check_theme(cls, v):
+        if v not in SITE_THEMES:
+            raise ValueError(f"theme must be one of: {', '.join(SITE_THEMES)}")
+        return v
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def check_date_format(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("date must be in YYYY-MM-DD format")
+        return v
+
 class CashFlowCreate(BaseModel):
     direction: str
     amount: float = Field(gt=0)
@@ -3954,6 +3981,55 @@ async def rebuild_site(admin: dict = Depends(require_admin)):
 @api_router.get("/")
 async def root():
     return {"message": "SilkRoute API v1.1", "status": "running"}
+
+# ========================
+# THEMES SAISONNIERS
+# ========================
+# Le theme PERSONNEL d'un visiteur (localStorage) prime toujours : ceci ne
+# fixe que le DEFAUT pour un visiteur sans preference enregistree.
+
+@api_router.get("/theme/active")
+async def get_active_theme():
+    """Theme programme pour AUJOURD'HUI, ou aucun si rien n'est planifie.
+    Route publique : appelee avant meme de savoir qui visite le site."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # En cas de chevauchement de deux periodes, la plus recemment creee gagne :
+    # c'est la derniere decision de l'admin qui doit prevaloir.
+    schedule = await db.theme_schedules.find_one(
+        {"start_date": {"$lte": today}, "end_date": {"$gte": today}},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    return {"theme": schedule["theme"] if schedule else None}
+
+@api_router.get("/admin/theme-schedules")
+async def list_theme_schedules(admin: dict = Depends(require_admin)):
+    schedules = await db.theme_schedules.find({}, {"_id": 0}).sort("start_date", 1).to_list(200)
+    return schedules
+
+@api_router.post("/admin/theme-schedules")
+async def create_theme_schedule(data: ThemeScheduleCreate, admin: dict = Depends(require_admin)):
+    if data.end_date < data.start_date:
+        raise HTTPException(status_code=400, detail="end_date must not be before start_date")
+    schedule = {
+        "schedule_id": f"theme_{uuid.uuid4().hex[:12]}",
+        "start_date": data.start_date,
+        "end_date": data.end_date,
+        "theme": data.theme,
+        "label": data.label,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin["user_id"],
+    }
+    await db.theme_schedules.insert_one(schedule)
+    schedule.pop("_id", None)
+    return schedule
+
+@api_router.delete("/admin/theme-schedules/{schedule_id}")
+async def delete_theme_schedule(schedule_id: str, admin: dict = Depends(require_admin)):
+    result = await db.theme_schedules.delete_one({"schedule_id": schedule_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return {"message": "Schedule deleted"}
 
 @api_router.get("/health")
 async def health():

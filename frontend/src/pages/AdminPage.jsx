@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { Layout } from '@/components/Layout';
+import { Layout, THEMES } from '@/components/Layout';
 import { useSeo } from '@/hooks/useSeo';
 import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
   Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin,
-  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle, Wallet
+  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle, Wallet, Palette
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
+import { api, getErrorMessage } from '@/lib/api';
 import ImageDropZone from '@/components/ImageDropZone';
+import DatePicker from '@/components/DatePicker';
+import DateTimePicker from '@/components/DateTimePicker';
 // Les blocs de suivi sont partages avec le portail transitaire : meme UI,
 // seule la route appelee change (basePath).
 import { PHASES, phaseLabel, PhaseUpdateSection, DocumentUploadSection } from '@/pages/PartnerPage';
@@ -34,7 +36,8 @@ const AdminPage = () => {
     { path: '/admin/transitaires', label: i18n.language === 'fr' ? 'Transitaires' : 'Forwarders', icon: Truck },
     { path: '/admin/suppliers', label: i18n.language === 'fr' ? 'Fournisseurs' : 'Suppliers', icon: Factory },
     { path: '/admin/accounts', label: i18n.language === 'fr' ? 'Comptes partenaires' : 'Partner accounts', icon: KeyRound },
-    { path: '/admin/content', label: i18n.language === 'fr' ? 'Contenu & SEO' : 'Content & SEO', icon: FileText }
+    { path: '/admin/content', label: i18n.language === 'fr' ? 'Contenu & SEO' : 'Content & SEO', icon: FileText },
+    { path: '/admin/themes', label: i18n.language === 'fr' ? 'Thèmes saisonniers' : 'Seasonal themes', icon: Palette }
   ];
 
   return (
@@ -78,6 +81,7 @@ const AdminPage = () => {
               <Route path="suppliers" element={<AdminSuppliers />} />
               <Route path="accounts" element={<AdminPartnerAccounts />} />
               <Route path="content" element={<AdminContent />} />
+              <Route path="themes" element={<AdminThemes />} />
             </Routes>
           </main>
         </div>
@@ -335,8 +339,8 @@ const TreasuryFlows = ({ data, filtres, setFiltres, groupages, fr, onDelete }) =
             <option key={g.groupage_id} value={g.groupage_id}>{g.reference || g.groupage_id}</option>
           ))}
         </select>
-        <input type="date" value={filtres.date_from} onChange={(e) => set({ date_from: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm" />
-        <input type="date" value={filtres.date_to} onChange={(e) => set({ date_to: e.target.value })} className="input-dark px-3 py-2 rounded-md text-sm" />
+        <DatePicker value={filtres.date_from} onChange={(v) => set({ date_from: v })} className="text-sm w-40" />
+        <DatePicker value={filtres.date_to} onChange={(v) => set({ date_to: v })} className="text-sm w-40" />
       </div>
 
       {data.flows.length === 0 ? (
@@ -653,9 +657,7 @@ const CashFlowModal = ({ fr, onClose, onSaved }) => {
           </div>
           <div>
             <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Date' : 'Date'}</label>
-            <input type="date" required value={form.occurred_at}
-              onChange={(e) => set({ occurred_at: e.target.value })}
-              className="input-dark w-full px-4 py-2 rounded-md" />
+            <DatePicker required value={form.occurred_at} onChange={(v) => set({ occurred_at: v })} />
           </div>
           <div>
             <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Statut' : 'Status'}</label>
@@ -2071,22 +2073,18 @@ const CreateGroupageModal = ({ onClose, onCreated, initialData }) => {
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">Deadline</label>
-              <input
-                type="date"
-                value={formData.deadline}
-                onChange={(e) => setFormData({...formData, deadline: e.target.value})}
-                className="input-dark w-full px-4 py-2 rounded-md"
+              <DateTimePicker
                 required
+                value={formData.deadline}
+                onChange={(v) => setFormData({...formData, deadline: v})}
               />
             </div>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">Estimated Arrival</label>
-              <input
-                type="date"
-                value={formData.estimated_arrival}
-                onChange={(e) => setFormData({...formData, estimated_arrival: e.target.value})}
-                className="input-dark w-full px-4 py-2 rounded-md"
+              <DateTimePicker
                 required
+                value={formData.estimated_arrival}
+                onChange={(v) => setFormData({...formData, estimated_arrival: v})}
               />
             </div>
           </div>
@@ -3594,13 +3592,11 @@ const EditGroupageModal = ({ groupage, fr, onClose, onSaved }) => {
           <div className="grid md:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">Deadline</label>
-              <input type="datetime-local" value={form.deadline} onChange={(e) => set({ deadline: e.target.value })}
-                className="input-dark w-full px-4 py-2 rounded-md" required />
+              <DateTimePicker required value={form.deadline} onChange={(v) => set({ deadline: v })} />
             </div>
             <div>
               <label className="block text-sm text-[#A1A1AA] mb-2">{fr ? 'Arrivée estimée' : 'Estimated arrival'}</label>
-              <input type="datetime-local" value={form.estimated_arrival} onChange={(e) => set({ estimated_arrival: e.target.value })}
-                className="input-dark w-full px-4 py-2 rounded-md" required />
+              <DateTimePicker required value={form.estimated_arrival} onChange={(v) => set({ estimated_arrival: v })} />
             </div>
           </div>
 
@@ -4650,5 +4646,136 @@ const Info = ({ label, value }) => (
     <p className="text-[#A1A1AA]">{value || '—'}</p>
   </div>
 );
+
+const THEME_LABELS_FR = { light: 'Clair', dark: 'Sombre', whatsapp: 'WhatsApp' };
+
+// Programmation calendaire du theme par defaut du site (ex: WhatsApp du 1er
+// au 31 decembre). Le theme personnel d'un visiteur (localStorage) prime
+// toujours ; ceci ne fixe que le defaut pour un visiteur sans preference.
+const AdminThemes = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [schedules, setSchedules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ start_date: '', end_date: '', theme: 'whatsapp', label: '' });
+
+  const fetchSchedules = () => {
+    api.get('/admin/theme-schedules')
+      .then(r => setSchedules(r.data))
+      .catch(() => toast.error(fr ? 'Chargement impossible' : 'Failed to load'))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => {
+    fetchSchedules();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.start_date || !form.end_date) {
+      toast.error(fr ? 'Dates requises' : 'Dates required');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post('/admin/theme-schedules', { ...form, label: form.label || null });
+      toast.success(fr ? 'Période ajoutée' : 'Period added');
+      setForm({ start_date: '', end_date: '', theme: 'whatsapp', label: '' });
+      fetchSchedules();
+    } catch (error) {
+      toast.error(getErrorMessage(error, fr ? 'Erreur' : 'Error'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const supprimer = async (schedule_id) => {
+    if (!window.confirm(fr ? 'Supprimer cette période ?' : 'Delete this period?')) return;
+    try {
+      await api.delete(`/admin/theme-schedules/${schedule_id}`);
+      fetchSchedules();
+    } catch (error) {
+      toast.error(fr ? 'Erreur' : 'Error');
+    }
+  };
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  return (
+    <div>
+      <h1 className="font-['Bebas_Neue'] text-4xl mb-2">
+        {fr ? 'Thèmes saisonniers' : 'Seasonal themes'}
+      </h1>
+      <p className="text-[#A1A1AA] mb-6">
+        {fr
+          ? "Le thème par défaut du site change automatiquement pendant les périodes définies ici. Un visiteur ayant déjà choisi son thème n'est jamais affecté — seuls les nouveaux visiteurs voient ce défaut."
+          : "The site's default theme switches automatically during the periods defined here. A visitor who already picked a theme is never affected — only new visitors see this default."}
+      </p>
+
+      <form onSubmit={submit} className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-4 mb-6 grid md:grid-cols-5 gap-3 items-end">
+        <div>
+          <label className="block text-xs text-[#A1A1AA] mb-1">{fr ? 'Du' : 'From'}</label>
+          <DatePicker value={form.start_date} onChange={(v) => setForm({ ...form, start_date: v })} />
+        </div>
+        <div>
+          <label className="block text-xs text-[#A1A1AA] mb-1">{fr ? 'Au' : 'To'}</label>
+          <DatePicker value={form.end_date} onChange={(v) => setForm({ ...form, end_date: v })} minDate={form.start_date} />
+        </div>
+        <div>
+          <label className="block text-xs text-[#A1A1AA] mb-1">{fr ? 'Thème' : 'Theme'}</label>
+          <select value={form.theme} onChange={(e) => setForm({ ...form, theme: e.target.value })} className="input-dark w-full px-4 py-2 rounded-md">
+            {THEMES.map(t => <option key={t} value={t}>{THEME_LABELS_FR[t]}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-[#A1A1AA] mb-1">{fr ? 'Nom (optionnel)' : 'Label (optional)'}</label>
+          <input type="text" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })}
+            placeholder={fr ? 'ex: Noël' : 'e.g. Christmas'} className="input-dark w-full px-4 py-2 rounded-md" />
+        </div>
+        <button type="submit" disabled={saving} className="btn-gold px-4 py-2 rounded-md flex items-center justify-center gap-2 disabled:opacity-50">
+          {saving && <Loader2 className="w-4 h-4 animate-spin" />}
+          {fr ? 'Ajouter' : 'Add'}
+        </button>
+      </form>
+
+      {loading ? (
+        <div className="flex justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-[#D4AF37]" /></div>
+      ) : schedules.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center text-[#71717A]">
+          {fr ? "Aucune période programmée : le thème par défaut reste clair en permanence." : 'No period scheduled: the default theme stays light at all times.'}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {schedules.map(s => {
+            const active = s.start_date <= today && today <= s.end_date;
+            return (
+              <div key={s.schedule_id} className={`flex items-center gap-4 p-4 rounded-lg border ${active ? 'border-[#22C55E]/40 bg-[#22C55E]/5' : 'border-[#2A2A2A] bg-[#141414]'}`}>
+                <Palette className="w-5 h-5 text-[#D4AF37] shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium">
+                    {s.label || THEME_LABELS_FR[s.theme]}
+                    <span className="ml-2 text-xs text-[#71717A]">({THEME_LABELS_FR[s.theme]})</span>
+                  </p>
+                  <p className="text-xs text-[#71717A]">
+                    {new Date(s.start_date).toLocaleDateString('fr-FR')} → {new Date(s.end_date).toLocaleDateString('fr-FR')}
+                  </p>
+                </div>
+                {active && (
+                  <span className="text-xs bg-[#22C55E]/20 text-[#22C55E] px-2 py-1 rounded-full shrink-0">
+                    {fr ? 'Actif aujourd\'hui' : 'Active today'}
+                  </span>
+                )}
+                <button onClick={() => supprimer(s.schedule_id)} className="text-[#71717A] hover:text-[#EF4444] transition-colors shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default AdminPage;

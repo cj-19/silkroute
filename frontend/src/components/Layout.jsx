@@ -1,12 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
-import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield, Sun, Moon, MessageCircle } from 'lucide-react';
+import { Menu, X, Globe, User, LogOut, LayoutDashboard, ShoppingBag, Shield, Sun, Moon, MessageCircle, Check } from 'lucide-react';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
+import { api } from '@/lib/api';
 
-// Ordre de rotation du bouton de theme. La classe correspondante est posee sur
-// <html> ; 'light' n'a pas de surcharge dediee dans App.css au-dela de html.light.
-const THEMES = ['light', 'dark', 'whatsapp'];
+// Themes disponibles. La classe correspondante est posee sur <html> ; 'light'
+// n'a pas de surcharge dediee dans App.css au-dela de html.light.
+export const THEMES = ['light', 'dark', 'whatsapp'];
 const THEME_LABELS = { light: 'Mode clair', dark: 'Mode sombre', whatsapp: 'Mode WhatsApp' };
 const THEME_ICONS = { light: Sun, dark: Moon, whatsapp: MessageCircle };
 
@@ -16,9 +18,10 @@ export const Navbar = () => {
   const navigate = useNavigate();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // Themes : persistes dans localStorage, appliques via une classe sur <html>
-  // (voir App.css). CLAIR par defaut. Le bouton fait tourner les trois themes.
-  const [theme, setTheme] = useState(() => {
+  // Themes : persistes dans localStorage UNIQUEMENT sur un choix EXPLICITE
+  // (menu deroulant). CLAIR par defaut au tout premier rendu (pas de FOUC).
+  const hadExplicitPreference = useRef(THEMES.includes(localStorage.getItem('silkroute_theme')));
+  const [theme, setThemeState] = useState(() => {
     const saved = localStorage.getItem('silkroute_theme');
     return THEMES.includes(saved) ? saved : 'light';
   });
@@ -29,11 +32,26 @@ export const Navbar = () => {
     // `dark` pilote les composants shadcn (tailwind darkMode: ["class"]) : sans
     // cela, dialogues et menus resteraient sombres sur un theme clair.
     root.classList.toggle('dark', theme === 'dark');
-    localStorage.setItem('silkroute_theme', theme);
   }, [theme]);
 
-  const cycleTheme = () => setTheme(prev => THEMES[(THEMES.indexOf(prev) + 1) % THEMES.length]);
-  const nextThemeLabel = THEME_LABELS[THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]];
+  // Sans preference personnelle enregistree, le theme programme pour
+  // AUJOURD'HUI (defini par l'admin) devient le defaut - sans etre ecrit
+  // dans localStorage, pour que ce defaut reste dynamique (si la periode
+  // programmee change demain, un visiteur sans preference doit le voir).
+  useEffect(() => {
+    if (hadExplicitPreference.current) return;
+    api.get('/theme/active')
+      .then(res => { if (res.data?.theme && THEMES.includes(res.data.theme)) setThemeState(res.data.theme); })
+      .catch(() => {}); // best-effort : le defaut 'light' reste si indisponible
+  }, []);
+
+  // Choix EXPLICITE de l'utilisateur : celui-la persiste et prime desormais
+  // sur tout theme programme.
+  const setTheme = (t) => {
+    hadExplicitPreference.current = true;
+    setThemeState(t);
+    localStorage.setItem('silkroute_theme', t);
+  };
 
   // Get clean language code (fr or en)
   const currentLang = i18n.language?.substring(0, 2).toLowerCase() || 'fr';
@@ -101,17 +119,35 @@ export const Navbar = () => {
 
           {/* Right Side */}
           <div className="flex items-center gap-4">
-            {/* Theme Toggle — min 44px de cote pour respecter les zones tactiles mobiles.
-                L'icone montre le theme ACTUEL ; l'infobulle annonce le suivant. */}
-            <button
-              onClick={cycleTheme}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
-              title={`${THEME_LABELS[theme]} — cliquer pour : ${nextThemeLabel}`}
-              aria-label={`Thème actuel : ${THEME_LABELS[theme]}. Passer au ${nextThemeLabel}.`}
-              data-testid="theme-toggle"
-            >
-              {React.createElement(THEME_ICONS[theme], { className: 'w-4 h-4 text-[#A1A1AA]' })}
-            </button>
+            {/* Selecteur de theme — menu deroulant explicite (les 3 themes sont
+                nommes) plutot qu'un cycle a l'aveugle. Min 44px de cote pour
+                les zones tactiles mobiles. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-md border border-[#2A2A2A] hover:border-[#D4AF37] transition-colors"
+                  title={THEME_LABELS[theme]}
+                  aria-label={`Thème actuel : ${THEME_LABELS[theme]}. Choisir un autre thème.`}
+                  data-testid="theme-toggle"
+                >
+                  {React.createElement(THEME_ICONS[theme], { className: 'w-4 h-4 text-[#A1A1AA]' })}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="bg-[#141414] border-[#2A2A2A] text-white">
+                {THEMES.map((t) => (
+                  <DropdownMenuItem
+                    key={t}
+                    onClick={() => setTheme(t)}
+                    className="flex items-center gap-2 cursor-pointer focus:bg-[#1A1A1A] focus:text-white"
+                    data-testid={`theme-option-${t}`}
+                  >
+                    {React.createElement(THEME_ICONS[t], { className: 'w-4 h-4 text-[#A1A1AA]' })}
+                    <span className="flex-1">{THEME_LABELS[t]}</span>
+                    {theme === t && <Check className="w-4 h-4 text-[#D4AF37]" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             {/* Language Toggle */}
             <button
