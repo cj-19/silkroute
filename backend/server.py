@@ -3788,6 +3788,11 @@ async def health():
         "resend": bool(os.environ.get("RESEND_API_KEY")),
         "cloudinary": bool(os.environ.get("CLOUDINARY_API_SECRET")),
         "deploy_hook": bool(os.environ.get("VERCEL_DEPLOY_HOOK_URL")),
+        # Diagnostic sans faire de vrai paiement : juste "la variable est vue
+        # par ce processus", jamais sa valeur.
+        "tara_api_key": bool(TARA_API_KEY),
+        "tara_business_id": bool(TARA_BUSINESS_ID),
+        "tara_webhook_secret": bool(TARA_WEBHOOK_SECRET),
     }
     checks["websocket_sessions"] = len(sio_user_sessions)
 
