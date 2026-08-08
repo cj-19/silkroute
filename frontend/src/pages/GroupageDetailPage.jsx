@@ -430,7 +430,7 @@ const GroupageDetailPage = () => {
                     ) : (
                       <>
                         <CreditCard className="w-5 h-5" />
-                        {t('groupages.join')} - 5,000 FCFA
+                        {t('groupages.join')}
                       </>
                     )}
                   </button>
