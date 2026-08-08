@@ -1251,6 +1251,24 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
 //  - carte (/paymentlinks, cardLink uniquement) : ouvre un lien externe Tara,
 //    seul canal utilisable depuis n'importe quel pays (Stripe n'opere pas au
 //    Cameroun). Meme suivi de statut, car il n'y a pas de retour automatique.
+// Codes d'echec transmis par l'operateur mobile money via le webhook Tara.
+// Sans traduction, le client ne voit qu'un "reessayez" muet alors que
+// certains codes indiquent precisement quoi corriger (recharger son compte,
+// confirmer sur son telephone...). Repli sur un message generique pour tout
+// code non repertorie ici.
+const TARA_FAILURE_MESSAGES = {
+  COULD_NOT_WITHDRAW_FROM_CUSTOMER_TRANSACTION_DENIED_OR_NOT_ENOUGH_BALANCE: {
+    fr: "Solde insuffisant ou transaction refusée sur votre compte mobile money.",
+    en: 'Insufficient balance or the transaction was declined on your mobile money account.',
+  },
+};
+
+function taraFailureMessage(failureCode, fr) {
+  const entry = failureCode && TARA_FAILURE_MESSAGES[failureCode];
+  if (entry) return fr ? entry.fr : entry.en;
+  return fr ? "Le paiement n'a pas abouti. Réessayez." : 'The payment did not go through. Please retry.';
+}
+
 const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
   const [etape, setEtape] = useState('choix'); // choix | telephone | attente | succes
   const [methode, setMethode] = useState(null); // 'mobile_money' | 'card'
@@ -1269,7 +1287,7 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
         if (res.data.status === 'completed') { clearInterval(id); setEtape('succes'); }
         else if (res.data.status === 'failed') {
           clearInterval(id);
-          setErreur(fr ? "Le paiement n'a pas abouti. Réessayez." : 'The payment did not go through. Please retry.');
+          setErreur(taraFailureMessage(res.data.failure_code, fr));
           setEtape('choix');
         }
       } catch { /* on retente au prochain intervalle */ }

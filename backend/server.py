@@ -2532,7 +2532,9 @@ async def get_tara_payment_status(payment_id: str, user: dict = Depends(get_curr
     )
     if not payment:
         raise HTTPException(status_code=404, detail="Payment not found")
-    return {"status": payment["status"]}
+    # failure_code (ex: solde insuffisant) est transmis au frontend, qui le
+    # traduit en message actionnable au lieu d'un "reessayez" muet.
+    return {"status": payment["status"], "failure_code": payment.get("failure_code")}
 
 def _tara_status_is_success(payload: dict) -> Optional[bool]:
     """Lit le statut renvoye par Tara. /mobilepay est documente avec precision
@@ -2586,7 +2588,14 @@ async def tara_webhook(secret: str, payment_id: str, request: Request):
     if succes is not True:
         await db.payment_transactions.update_one(
             {"payment_id": payment_id},
-            {"$set": {"status": "failed", "provider_status": str(payload.get("status") or "unknown")}}
+            {"$set": {
+                "status": "failed",
+                "provider_status": str(payload.get("status") or "unknown"),
+                # Code precis de l'operateur mobile money (ex: solde insuffisant),
+                # transmis au client via /payments/tara/status pour qu'il sache
+                # QUOI corriger plutot qu'un "reessayez" muet.
+                "failure_code": payload.get("transactionCode"),
+            }}
         )
         logger.warning(f"Tara reported a non-successful payment {payment_id}: {payload}")
         return {"received": True, "handled": True, "settled": False}
