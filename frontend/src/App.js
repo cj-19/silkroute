@@ -4,6 +4,7 @@ import "@/i18n";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "sonner";
+import ErrorBoundary from "@/components/ErrorBoundary";
 
 // Pages
 import LandingPage from "@/pages/LandingPage";
@@ -129,21 +130,23 @@ function App() {
   // pas ici : le theme doit survivre aux pages sans Layout.
   return (
     <div className="App">
-      <AuthProvider>
-        <BrowserRouter>
-          <AppRouter />
-        </BrowserRouter>
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            style: {
-              background: 'var(--bg-surface)',
-              color: 'var(--text-primary)',
-              border: '1px solid var(--border-color)'
-            }
-          }}
-        />
-      </AuthProvider>
+      <ErrorBoundary>
+        <AuthProvider>
+          <BrowserRouter>
+            <AppRouter />
+          </BrowserRouter>
+          <Toaster
+            position="top-right"
+            toastOptions={{
+              style: {
+                background: 'var(--bg-surface)',
+                color: 'var(--text-primary)',
+                border: '1px solid var(--border-color)'
+              }
+            }}
+          />
+        </AuthProvider>
+      </ErrorBoundary>
     </div>
   );
 }

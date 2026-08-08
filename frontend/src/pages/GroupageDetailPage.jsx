@@ -1303,12 +1303,27 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
   const payerParCarte = async () => {
     setEnvoi(true);
     setErreur(null);
+    // L'onglet doit s'ouvrir de facon SYNCHRONE, dans la foulee du clic :
+    // la plupart des navigateurs bloquent silencieusement window.open() s'il
+    // survient apres un await (ils ne le considerent plus comme declenche
+    // par l'utilisateur). On ouvre donc un onglet vide tout de suite, et on
+    // le redirige une fois l'URL Tara connue.
+    const onglet = window.open('', '_blank', 'noopener,noreferrer');
     try {
       const res = await api.post('/payments/tara/card', { groupage_id: groupageId, payment_type: paymentType });
       setPaiement(res.data);
-      window.open(res.data.card_link, '_blank', 'noopener,noreferrer');
+      if (onglet) {
+        onglet.location.href = res.data.card_link;
+      } else {
+        // Popup bloque malgre tout (bloqueur agressif) : on propose un lien
+        // cliquable plutot que de laisser l'utilisateur sans recours.
+        setErreur(fr
+          ? "Votre navigateur a bloqué l'ouverture de la page de paiement. Autorisez les popups pour ce site, ou cliquez sur le bouton ci-dessous."
+          : 'Your browser blocked the payment page. Allow pop-ups for this site, or use the button below.');
+      }
       setEtape('attente');
     } catch (error) {
+      if (onglet) onglet.close();
       setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
     } finally {
       setEnvoi(false);
@@ -1408,11 +1423,23 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
                 </p>
               </>
             ) : (
-              <p className="font-medium mb-1">
-                {fr
-                  ? 'Terminez le paiement dans l\'onglet ouvert, puis revenez ici.'
-                  : 'Complete the payment in the tab that opened, then come back here.'}
-              </p>
+              <>
+                <p className="font-medium mb-1">
+                  {fr
+                    ? 'Terminez le paiement dans l\'onglet ouvert, puis revenez ici.'
+                    : 'Complete the payment in the tab that opened, then come back here.'}
+                </p>
+                {paiement?.card_link && (
+                  <a
+                    href={paiement.card_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-[#D4AF37] hover:underline block mt-2"
+                  >
+                    {fr ? "L'onglet ne s'est pas ouvert ? Cliquez ici" : "Tab didn't open? Click here"}
+                  </a>
+                )}
+              </>
             )}
             <p className="text-xs text-[#71717A] mt-3">
               {fr ? 'Cette page se met à jour automatiquement.' : 'This page updates automatically.'}
