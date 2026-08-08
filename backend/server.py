@@ -3162,8 +3162,17 @@ async def list_payment_attempts(status: Optional[str] = None, payment_method: Op
     users = await db.users.find({"user_id": {"$in": list(user_ids)}}, {"_id": 0, "user_id": 1, "name": 1}) \
         .to_list(len(user_ids) or 1)
     noms = {u["user_id"]: u["name"] for u in users}
+
+    groupage_ids = {a["groupage_id"] for a in attempts if a.get("groupage_id")}
+    groupages = await db.groupages.find({"groupage_id": {"$in": list(groupage_ids)}}, {"_id": 0, "groupage_id": 1, "reference": 1, "title": 1}) \
+        .to_list(len(groupage_ids) or 1)
+    refs = {g["groupage_id"]: (g.get("reference") or g["groupage_id"]) for g in groupages}
+    titres = {g["groupage_id"]: g.get("title") for g in groupages}
+
     for a in attempts:
         a["user_name"] = noms.get(a.get("user_id"))
+        a["groupage_reference"] = refs.get(a.get("groupage_id"))
+        a["groupage_title"] = titres.get(a.get("groupage_id"))
 
     return attempts
 

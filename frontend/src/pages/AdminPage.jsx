@@ -7,7 +7,7 @@ import {
   LayoutDashboard, AlertTriangle, Package, Users, Shield,
   Plus, Check, X, Eye, ChevronRight, Loader2, Lightbulb,
   Truck, Factory, KeyRound, Pencil, Copy, RefreshCw, MapPin,
-  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle, Wallet, Palette
+  Image as ImageIcon, FileText, Trash2, ExternalLink, Rocket, HelpCircle, Wallet, Palette, CreditCard
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, getErrorMessage } from '@/lib/api';
@@ -17,6 +17,7 @@ import DateTimePicker from '@/components/DateTimePicker';
 // Les blocs de suivi sont partages avec le portail transitaire : meme UI,
 // seule la route appelee change (basePath).
 import { PHASES, phaseLabel, PhaseUpdateSection, DocumentUploadSection } from '@/pages/PartnerPage';
+import { TARA_FAILURE_MESSAGES } from '@/pages/GroupageDetailPage';
 
 const AdminPage = () => {
   useSeo({ title: 'Administration | SilkRoute', path: '/admin', noindex: true });
@@ -30,6 +31,7 @@ const AdminPage = () => {
     { path: '/admin/groupages', label: t('admin.groupages'), icon: Package },
     { path: '/admin/tracking', label: i18n.language === 'fr' ? 'Suivi & documents' : 'Tracking & documents', icon: Truck },
     { path: '/admin/treasury', label: i18n.language === 'fr' ? 'Trésorerie' : 'Treasury', icon: Wallet },
+    { path: '/admin/payment-attempts', label: i18n.language === 'fr' ? 'Tentatives de paiement' : 'Payment attempts', icon: CreditCard },
     { path: '/admin/proposals', label: i18n.language === 'fr' ? 'Propositions' : 'Proposals', icon: Lightbulb },
     { path: '/admin/kyc', label: t('admin.kyc'), icon: Shield },
     { path: '/admin/users', label: i18n.language === 'fr' ? 'Utilisateurs' : 'Users', icon: Users },
@@ -82,6 +84,7 @@ const AdminPage = () => {
               <Route path="accounts" element={<AdminPartnerAccounts />} />
               <Route path="content" element={<AdminContent />} />
               <Route path="themes" element={<AdminThemes />} />
+              <Route path="payment-attempts" element={<AdminPaymentAttempts />} />
             </Routes>
           </main>
         </div>
@@ -4646,6 +4649,140 @@ const Info = ({ label, value }) => (
     <p className="text-[#A1A1AA]">{value || '—'}</p>
   </div>
 );
+
+const PAYMENT_STATUS_STYLE = {
+  initiated: 'bg-[#71717A]/20 text-[#71717A]',
+  pending: 'bg-[#F97316]/20 text-[#F97316]',
+  completed: 'bg-[#22C55E]/20 text-[#22C55E]',
+  failed: 'bg-[#EF4444]/20 text-[#EF4444]',
+};
+const PAYMENT_STATUS_LABEL_FR = { initiated: 'Initiée', pending: 'En attente', completed: 'Confirmée', failed: 'Échouée' };
+const PAYMENT_STATUS_LABEL_EN = { initiated: 'Initiated', pending: 'Pending', completed: 'Completed', failed: 'Failed' };
+const PAYMENT_METHOD_LABEL = { mobile_money: 'Mobile Money', card: 'Carte' };
+
+// Suivi de CHAQUE tentative de paiement (aboutie ou non), pas seulement les
+// transactions confirmees : indispensable pour reperer un probleme (numero
+// mal saisi, operateur en panne) avant que le volume ne rende ca invisible.
+const AdminPaymentAttempts = () => {
+  const { i18n } = useTranslation();
+  const fr = i18n.language === 'fr';
+  const [attempts, setAttempts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [methodFilter, setMethodFilter] = useState('');
+
+  const fetchAttempts = () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (statusFilter) params.set('status', statusFilter);
+    if (methodFilter) params.set('payment_method', methodFilter);
+    api.get(`/admin/payment-attempts?${params}`)
+      .then(r => setAttempts(r.data))
+      .catch(() => toast.error(fr ? 'Chargement impossible' : 'Failed to load'))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => {
+    fetchAttempts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, methodFilter]);
+
+  const fmt = (n) => new Intl.NumberFormat('fr-FR').format(Math.round(n || 0));
+
+  const failureText = (a) => {
+    if (a.failure_code) {
+      const entry = TARA_FAILURE_MESSAGES[a.failure_code];
+      return entry ? (fr ? entry.fr : entry.en) : a.failure_code;
+    }
+    return a.failure_reason || null;
+  };
+
+  return (
+    <div>
+      <h1 className="font-['Bebas_Neue'] text-4xl mb-2">
+        {fr ? 'Tentatives de paiement' : 'Payment attempts'}
+      </h1>
+      <p className="text-[#A1A1AA] mb-6">
+        {fr
+          ? 'Chaque essai de paiement Tara, réussi ou non : qui, quel moyen, quand, et le motif précis en cas d\'échec.'
+          : 'Every Tara payment attempt, successful or not: who, which method, when, and the precise reason on failure.'}
+      </p>
+
+      <div className="flex flex-wrap gap-3 mb-6">
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="input-dark px-4 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Tous les statuts' : 'All statuses'}</option>
+          {Object.keys(PAYMENT_STATUS_STYLE).map(s => (
+            <option key={s} value={s}>{fr ? PAYMENT_STATUS_LABEL_FR[s] : PAYMENT_STATUS_LABEL_EN[s]}</option>
+          ))}
+        </select>
+        <select value={methodFilter} onChange={(e) => setMethodFilter(e.target.value)} className="input-dark px-4 py-2 rounded-md text-sm">
+          <option value="">{fr ? 'Tous les moyens' : 'All methods'}</option>
+          <option value="mobile_money">Mobile Money</option>
+          <option value="card">{fr ? 'Carte' : 'Card'}</option>
+        </select>
+        <button onClick={fetchAttempts} className="btn-outline px-4 py-2 rounded-md text-sm flex items-center gap-2">
+          <RefreshCw className="w-4 h-4" />
+          {fr ? 'Actualiser' : 'Refresh'}
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-10"><Loader2 className="w-6 h-6 animate-spin text-[#D4AF37]" /></div>
+      ) : attempts.length === 0 ? (
+        <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-8 text-center text-[#71717A]">
+          {fr ? 'Aucune tentative pour ces filtres.' : 'No attempts for these filters.'}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm table-dark">
+            <thead>
+              <tr className="text-left text-[#71717A] border-b border-[#2A2A2A]">
+                <th className="py-2 pr-4">{fr ? 'Quand' : 'When'}</th>
+                <th className="py-2 pr-4">{fr ? 'Qui' : 'Who'}</th>
+                <th className="py-2 pr-4">{fr ? 'Groupage' : 'Groupage'}</th>
+                <th className="py-2 pr-4">{fr ? 'Moyen' : 'Method'}</th>
+                <th className="py-2 pr-4">{fr ? 'Montant' : 'Amount'}</th>
+                <th className="py-2 pr-4">{fr ? 'Statut' : 'Status'}</th>
+                <th className="py-2 pr-4">{fr ? "D'où" : 'From'}</th>
+                <th className="py-2 pr-4">{fr ? 'Motif' : 'Reason'}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {attempts.map((a) => (
+                <tr key={a.payment_id} className="border-b border-[#1A1A1A]">
+                  <td className="py-2 pr-4 whitespace-nowrap text-[#71717A]">
+                    {new Date(a.created_at).toLocaleString(fr ? 'fr-FR' : 'en-US')}
+                  </td>
+                  <td className="py-2 pr-4">{a.user_name || a.user_id}</td>
+                  <td className="py-2 pr-4">
+                    {a.groupage_reference && (
+                      <span className="font-mono text-xs text-[#D4AF37] bg-[#D4AF37]/10 px-1.5 py-0.5 rounded mr-1">
+                        {a.groupage_reference}
+                      </span>
+                    )}
+                    <span className="text-[#A1A1AA]">{a.groupage_title}</span>
+                  </td>
+                  <td className="py-2 pr-4">{PAYMENT_METHOD_LABEL[a.payment_method] || a.payment_method}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap">{fmt(a.amount)} FCFA</td>
+                  <td className="py-2 pr-4">
+                    <span className={`text-xs px-2 py-1 rounded-full whitespace-nowrap ${PAYMENT_STATUS_STYLE[a.status] || ''}`}>
+                      {fr ? PAYMENT_STATUS_LABEL_FR[a.status] : PAYMENT_STATUS_LABEL_EN[a.status] || a.status}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-4 text-[#71717A] whitespace-nowrap">
+                    {a.ip_city ? `${a.ip_city}, ${a.ip_country}` : (a.ip_country || '—')}
+                  </td>
+                  <td className="py-2 pr-4 text-[#EF4444] max-w-xs">
+                    {failureText(a) || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const THEME_LABELS_FR = { light: 'Clair', dark: 'Sombre', whatsapp: 'WhatsApp' };
 

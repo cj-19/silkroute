@@ -1341,14 +1341,14 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
 // certains codes indiquent precisement quoi corriger (recharger son compte,
 // confirmer sur son telephone...). Repli sur un message generique pour tout
 // code non repertorie ici.
-const TARA_FAILURE_MESSAGES = {
+export const TARA_FAILURE_MESSAGES = {
   COULD_NOT_WITHDRAW_FROM_CUSTOMER_TRANSACTION_DENIED_OR_NOT_ENOUGH_BALANCE: {
     fr: "Solde insuffisant ou transaction refusée sur votre compte mobile money.",
     en: 'Insufficient balance or the transaction was declined on your mobile money account.',
   },
 };
 
-function taraFailureMessage(failureCode, fr) {
+export function taraFailureMessage(failureCode, fr) {
   const entry = failureCode && TARA_FAILURE_MESSAGES[failureCode];
   if (entry) return fr ? entry.fr : entry.en;
   return fr ? "Le paiement n'a pas abouti. Réessayez." : 'The payment did not go through. Please retry.';
