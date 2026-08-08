@@ -2268,7 +2268,14 @@ async def create_checkout(payment_data: PaymentCreate, request: Request, user: d
 # ========================
 
 def _backend_base_url(request: Request) -> str:
-    """URL publique du backend, pour construire l'URL de webhook envoyee a Tara."""
+    """URL publique du backend, pour construire l'URL de webhook envoyee a Tara.
+
+    request.base_url ne reflete le bon schema (https) que si uvicorn tourne
+    avec --proxy-headers (voir Procfile) : Railway termine le TLS a sa
+    frontiere et relaie en clair vers le conteneur, donc sans cette option
+    la requete parait venir en HTTP. Une URL de webhook en http:// a deja
+    ete rejetee par Tara ("ONLY_HTTPS_LINKKS_ALLOWED").
+    """
     explicit = os.environ.get("BACKEND_URL", "").strip().rstrip("/")
     if explicit:
         return explicit
