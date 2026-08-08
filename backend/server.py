@@ -512,6 +512,14 @@ class TaraMobilePayCreate(BaseModel):
             raise ValueError("Numero de telephone invalide")
         return digits
 
+class TaraCardPaymentCreate(BaseModel):
+    """Paiement carte : pas de numero de telephone, contrairement au mobile
+    money. Modele distinct plutot que de reutiliser TaraMobilePayCreate, dont
+    le champ phone_number est obligatoire - le confondre faisait echouer
+    toute requete carte en validation (422) avant meme d'atteindre la route."""
+    groupage_id: str
+    payment_type: str  # "caution" ou "solde"
+
 # Documents logistiques
 class LogisticsDocument(BaseModel):
     doc_type: str  # "bl", "packing_list", "invoice", "customs"
@@ -2430,7 +2438,7 @@ async def create_tara_mobilepay(data: TaraMobilePayCreate, request: Request,
     }
 
 @api_router.post("/payments/tara/card")
-async def create_tara_card_payment(data: TaraMobilePayCreate, request: Request,
+async def create_tara_card_payment(data: TaraCardPaymentCreate, request: Request,
                                    user: dict = Depends(get_current_user)):
     """Genere un lien de paiement carte (Visa/Mastercard) via Tara, seul canal
     utilisable depuis un pays quelconque - Stripe n'opere pas au Cameroun.

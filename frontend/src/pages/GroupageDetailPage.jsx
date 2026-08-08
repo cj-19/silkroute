@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
-import { api } from '@/lib/api';
+import { api, getErrorMessage } from '@/lib/api';
 import { phaseLabel } from '@/pages/PartnerPage';
 import { useSeo } from '@/hooks/useSeo';
 
@@ -192,7 +192,7 @@ const GroupageDetailPage = () => {
       setShowPayment('caution');
     } catch (error) {
       console.error('Join error:', error);
-      toast.error(error.response?.data?.detail || t('common.error'));
+      toast.error(getErrorMessage(error, t('common.error')));
     } finally {
       setJoining(false);
     }
@@ -1157,7 +1157,7 @@ const ReviewsSection = ({ groupage, isMember, fr, delivered }) => {
       setComment('');
       fetchReviews();
     } catch (error) {
-      toast.error(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+      toast.error(getErrorMessage(error, fr ? 'Erreur' : 'Error'));
     } finally {
       setSubmitting(false);
     }
@@ -1294,7 +1294,7 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
       setPaiement(res.data);
       setEtape('attente');
     } catch (error) {
-      setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+      setErreur(getErrorMessage(error, fr ? 'Erreur' : 'Error'));
     } finally {
       setEnvoi(false);
     }
@@ -1339,7 +1339,7 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
       // selon le navigateur : ne jamais laisser cet effet de bord planter
       // tout le flux de paiement.
       try { if (onglet && !onglet.closed) onglet.close(); } catch { /* tant pis */ }
-      setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
+      setErreur(getErrorMessage(error, fr ? 'Erreur' : 'Error'));
     } finally {
       setEnvoi(false);
     }
