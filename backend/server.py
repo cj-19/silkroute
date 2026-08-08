@@ -163,6 +163,34 @@ def get_caution_fcfa(groupage: dict) -> float:
         return DEFAULT_CAUTION_FCFA
     return max(0.0, float(valeur))
 
+# Supplement fixe lorsqu'une reservation (nouvelle adhesion ou augmentation
+# d'un membre deja present) fait depasser la QUANTITE CIBLE du groupage
+# (total_quantity), pas seulement ce qu'il en reste au moment de la demande.
+OVERAGE_FEE_FCFA = float(os.environ.get("OVERAGE_FEE_FCFA", 10000))
+
+def compute_overage(groupage: dict, additional_quantity: int) -> dict:
+    """Verifie si `additional_quantity` unites supplementaires (nouvelle
+    adhesion OU ajout par un membre existant) font depasser total_quantity.
+
+    Les deux cas ajoutent des unites a current_quantity_reserved : cette
+    fonction est deliberement agnostique de qui fait la demande.
+    """
+    reserved = groupage.get("current_quantity_reserved", 0)
+    remaining = groupage["total_quantity"] - reserved
+    if additional_quantity <= remaining:
+        return {
+            "is_overage": False,
+            "overage_fee_fcfa": 0.0,
+            "new_total_quantity": groupage["total_quantity"],
+            "remaining": remaining,
+        }
+    return {
+        "is_overage": True,
+        "overage_fee_fcfa": OVERAGE_FEE_FCFA,
+        "new_total_quantity": reserved + additional_quantity,
+        "remaining": remaining,
+    }
+
 # Phases d'expedition d'un groupage, dans l'ordre. Mises a jour par le transitaire
 # (ou l'admin) et affichees aux membres sur la page du groupage.
 SHIPMENT_PHASES = ["preparation", "picked_up", "in_transit", "customs", "arrived", "delivered"]
@@ -480,6 +508,17 @@ class JoinGroupage(BaseModel):
     pickup_city: Optional[str] = None
     # Acceptation explicite d'aller recuperer la marchandise dans cette ville
     accept_pickup: bool = False
+    # Confirmation explicite du supplement de depassement (voir compute_overage).
+    # Sans elle, une demande qui depasse la quantite cible est refusee (409)
+    # plutot que silencieusement acceptee.
+    accept_overage: bool = False
+
+class IncreaseQuantity(BaseModel):
+    """Un membre DEJA present augmente sa part. Meme mecanisme de depassement
+    que l'adhesion : au-dela de la quantite cible du groupage, un supplement
+    s'applique et doit etre confirme explicitement."""
+    additional_quantity: int
+    accept_overage: bool = False
 
 class ForgotPassword(BaseModel):
     email: EmailStr
@@ -2087,27 +2126,38 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
     if groupage["status"] != "open":
         raise HTTPException(status_code=400, detail="Groupage is not open for joining")
     
-    # Vérifier la quantité disponible
-    remaining_quantity = groupage["total_quantity"] - groupage.get("current_quantity_reserved", 0)
-    if join_data.quantity > remaining_quantity:
-        raise HTTPException(status_code=400, detail=f"Only {remaining_quantity} units available")
-    
     existing = await db.groupage_members.find_one({
         "groupage_id": groupage_id,
         "user_id": user["user_id"]
     })
     if existing:
         raise HTTPException(status_code=400, detail="Already joined this groupage")
-    
-    # Calculer le prix pour ce membre
+
+    # Depassement de la quantite CIBLE (pas seulement ce qu'il en reste) : un
+    # supplement s'applique et doit etre confirme explicitement (409, pas
+    # silencieusement accepte, pas non plus bloquant comme avant).
+    overage = compute_overage(groupage, join_data.quantity)
+    if overage["is_overage"] and not join_data.accept_overage:
+        raise HTTPException(status_code=409, detail={
+            "code": "overage_confirmation_required",
+            "remaining": overage["remaining"],
+            "requested": join_data.quantity,
+            "overage_fee_fcfa": overage["overage_fee_fcfa"],
+        })
+
+    # Calculer le prix pour ce membre, sur la quantite cible EVENTUELLEMENT
+    # relevee pour absorber le depassement.
     pricing = calculate_groupage_price(
         get_member_unit_price_fcfa(groupage),
         get_per_item_transport_fcfa(groupage),
-        groupage["total_quantity"],
+        overage["new_total_quantity"],
         join_data.quantity,
         get_service_fee_percent(groupage)
     )
-    
+    if overage["is_overage"]:
+        pricing["total_fcfa"] += overage["overage_fee_fcfa"]
+        pricing["overage_fee_fcfa"] = overage["overage_fee_fcfa"]
+
     if not pricing.get("meets_minimum", True):
         raise HTTPException(
             status_code=400,
@@ -2148,28 +2198,106 @@ async def join_groupage(groupage_id: str, join_data: JoinGroupage, user: dict = 
         "quantity": join_data.quantity,
         "share_percentage": pricing["share_percentage"],
         "total_price_fcfa": pricing["total_fcfa"],
+        # Cumul des supplements de depassement payes par ce membre (adhesion +
+        # augmentations ulterieures). Distinct du prix normal, pour tracer
+        # separement ce que rapportent les depassements.
+        "overage_fee_fcfa": overage["overage_fee_fcfa"] if overage["is_overage"] else 0,
         "pickup_city": pickup_city,
         "pickup_accepted_at": datetime.now(timezone.utc).isoformat() if pickup_city else None,
         "caution_paid": False,
         "solde_paid": False,
         "joined_at": datetime.now(timezone.utc).isoformat()
     }
-    
+
     await db.groupage_members.insert_one(member_doc)
-    await db.groupages.update_one(
-        {"groupage_id": groupage_id},
-        {
-            "$inc": {
-                "current_members": 1,
-                "current_quantity_reserved": join_data.quantity
-            }
-        }
-    )
+    groupage_update = {"$inc": {"current_members": 1, "current_quantity_reserved": join_data.quantity}}
+    if overage["is_overage"]:
+        # La quantite cible affichee a tous doit refleter le depassement
+        # accepte, sinon la barre de progression et les futurs calculs de
+        # part redeviennent incoherents pour les autres membres.
+        groupage_update["$set"] = {"total_quantity": overage["new_total_quantity"]}
+    await db.groupages.update_one({"groupage_id": groupage_id}, groupage_update)
     
     return {
         "message": "Successfully joined groupage",
         "member_id": member_doc["member_id"],
         "pricing": pricing
+    }
+
+@api_router.post("/groupages/{groupage_id}/increase-quantity")
+async def increase_quantity(groupage_id: str, data: IncreaseQuantity, user: dict = Depends(get_current_user)):
+    """Un membre DEJA present dans le groupage augmente sa part. Meme logique
+    de depassement que l'adhesion (voir compute_overage) : au-dela de la
+    quantite cible du groupage, un supplement de OVERAGE_FEE_FCFA s'applique
+    et doit etre confirme explicitement (accept_overage).
+
+    Le supplement du prix (unites en plus + eventuel supplement de
+    depassement) est du immediatement : il passe par le meme circuit de
+    paiement Tara que la caution/le solde, avec payment_type="addition".
+    """
+    if data.additional_quantity <= 0:
+        raise HTTPException(status_code=400, detail="additional_quantity must be positive")
+
+    groupage = await db.groupages.find_one({"groupage_id": groupage_id})
+    if not groupage:
+        raise HTTPException(status_code=404, detail="Groupage not found")
+
+    membership = await db.groupage_members.find_one({"groupage_id": groupage_id, "user_id": user["user_id"]})
+    if not membership:
+        raise HTTPException(status_code=404, detail="You are not a member of this groupage")
+
+    overage = compute_overage(groupage, data.additional_quantity)
+    if overage["is_overage"] and not data.accept_overage:
+        raise HTTPException(status_code=409, detail={
+            "code": "overage_confirmation_required",
+            "remaining": overage["remaining"],
+            "requested": data.additional_quantity,
+            "overage_fee_fcfa": overage["overage_fee_fcfa"],
+        })
+
+    new_quantity = membership["quantity"] + data.additional_quantity
+    new_pricing = calculate_groupage_price(
+        get_member_unit_price_fcfa(groupage),
+        get_per_item_transport_fcfa(groupage),
+        overage["new_total_quantity"],
+        new_quantity,
+        get_service_fee_percent(groupage)
+    )
+    # Le supplement du est la difference entre le nouveau total (a la
+    # quantite augmentee) et ce que le membre devait avant, plus le
+    # supplement de depassement le cas echeant. Le service fee etant deja
+    # inclus dans les deux totaux, la difference reste correcte.
+    montant_supplementaire = new_pricing["total_fcfa"] - membership["total_price_fcfa"]
+    if overage["is_overage"]:
+        montant_supplementaire += overage["overage_fee_fcfa"]
+
+    await db.groupage_members.update_one(
+        {"member_id": membership["member_id"]},
+        {"$set": {
+            "quantity": new_quantity,
+            "share_percentage": new_pricing["share_percentage"],
+            "total_price_fcfa": new_pricing["total_fcfa"] + (
+                membership.get("overage_fee_fcfa", 0) + (overage["overage_fee_fcfa"] if overage["is_overage"] else 0)
+            ),
+            "overage_fee_fcfa": membership.get("overage_fee_fcfa", 0) + (overage["overage_fee_fcfa"] if overage["is_overage"] else 0),
+            # Montant a payer pour CETTE augmentation precisement : le circuit
+            # de paiement (payment_type="addition") s'appuie dessus.
+            "pending_addition_fcfa": round(montant_supplementaire, 0),
+            "addition_paid": False,
+        }}
+    )
+
+    groupage_update = {"$inc": {"current_quantity_reserved": data.additional_quantity}}
+    if overage["is_overage"]:
+        groupage_update["$set"] = {"total_quantity": overage["new_total_quantity"]}
+    await db.groupages.update_one({"groupage_id": groupage_id}, groupage_update)
+
+    return {
+        "message": "Quantity increased",
+        "new_quantity": new_quantity,
+        "pending_addition_fcfa": round(montant_supplementaire, 0),
+        "overage_applied": overage["is_overage"],
+        "overage_fee_fcfa": overage["overage_fee_fcfa"] if overage["is_overage"] else 0,
     }
 
 @api_router.get("/groupages/{groupage_id}/members")
@@ -2289,6 +2417,13 @@ async def mark_membership_paid(groupage_id: str, user_id: str, payment_type: str
     solde donc les deux drapeaux d'un coup, sinon l'interface reclamerait
     indefiniment un solde deja paye.
     """
+    if payment_type == "addition":
+        await db.groupage_members.update_one(
+            {"user_id": user_id, "groupage_id": groupage_id},
+            {"$set": {"addition_paid": True}}
+        )
+        return
+
     groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0, "caution_fcfa": 1})
     sans_caution = get_caution_fcfa(groupage or {}) <= 0
 
@@ -2311,6 +2446,16 @@ async def _member_amount_due_fcfa(groupage_id: str, user_id: str, payment_type: 
     membership = await db.groupage_members.find_one({"groupage_id": groupage_id, "user_id": user_id})
     if not membership:
         raise HTTPException(status_code=400, detail="You must join the groupage first")
+
+    # "addition" est independant du cycle caution/solde : un membre peut avoir
+    # deja tout paye et vouloir payer un supplement de quantite ensuite.
+    if payment_type == "addition":
+        if membership.get("addition_paid", True):
+            raise HTTPException(status_code=400, detail="Nothing pending to pay on this groupage")
+        montant = float(membership.get("pending_addition_fcfa") or 0)
+        if montant <= 0:
+            raise HTTPException(status_code=400, detail="Nothing pending to pay on this groupage")
+        return montant
 
     groupage = await db.groupages.find_one({"groupage_id": groupage_id}, {"_id": 0, "caution_fcfa": 1})
     caution = get_caution_fcfa(groupage or {})
@@ -2361,8 +2506,8 @@ async def _start_payment_attempt(data, request: Request, user: dict, method: str
     le suivi - c'est le point demande : savoir qui a essaye de payer, par quel
     moyen, quand et d'ou, pas seulement ce qui a abouti.
     """
-    if data.payment_type not in ("caution", "solde"):
-        raise HTTPException(status_code=400, detail="payment_type must be 'caution' or 'solde'")
+    if data.payment_type not in ("caution", "solde", "addition"):
+        raise HTTPException(status_code=400, detail="payment_type must be 'caution', 'solde' or 'addition'")
 
     groupage = await db.groupages.find_one({"groupage_id": data.groupage_id}, PUBLIC_GROUPAGE_PROJECTION)
     if not groupage:

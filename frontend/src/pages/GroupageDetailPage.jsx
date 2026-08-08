@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,7 +8,7 @@ import {
   Package, Clock, Users, MapPin, Star, Shield, FileText,
   MessageCircle, Send, Loader2, CheckCircle, AlertCircle,
   CreditCard, ExternalLink, Calculator, TrendingDown, Scale,
-  Download, Link as LinkIcon, Share2, Truck
+  Download, Link as LinkIcon, Share2, Truck, Plus
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { io } from 'socket.io-client';
@@ -17,6 +17,9 @@ import { phaseLabel } from '@/pages/PartnerPage';
 import { useSeo } from '@/hooks/useSeo';
 
 const SHIPMENT_PHASES = ['preparation', 'picked_up', 'in_transit', 'customs', 'arrived', 'delivered'];
+// Valeur d'affichage uniquement (avertissement avant meme d'essayer) : le
+// serveur reste la seule source de verite, confirmee via la reponse 409.
+const OVERAGE_FEE_FCFA_DISPLAY = 10000;
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const SOCKET_PATH = '/api/socket.io';
@@ -53,55 +56,65 @@ const GroupageDetailPage = () => {
   const [joining, setJoining] = useState(false);
   const [quantity, setQuantity] = useState(1);
   const [showJoinConfirm, setShowJoinConfirm] = useState(false);
-  // null, ou le type de paiement a regler ('caution' | 'solde')
+  // null, ou le type de paiement a regler ('caution' | 'solde' | 'addition')
   const [showPayment, setShowPayment] = useState(null);
   const [pickupCity, setPickupCity] = useState('');
   const [acceptPickup, setAcceptPickup] = useState(false);
+  // Lightbox de confirmation du supplement de depassement (quantite cible
+  // depassee), partagee entre l'adhesion et l'augmentation d'un membre
+  // existant : { remaining, requested, feeFcfa, onConfirm }
+  const [overageConfirm, setOverageConfirm] = useState(null);
+  const [showIncreaseQuantity, setShowIncreaseQuantity] = useState(false);
   
   const socketRef = useRef(null);
   const messagesEndRef = useRef(null);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const groupageRes = await api.get(`/groupages/${id}`);
-        setGroupage(groupageRes.data);
+  // Extraite du useEffect pour etre reutilisable : fermer le modal de
+  // paiement, valider une augmentation de quantite, etc. doivent tous
+  // pouvoir rafraichir l'etat sans dupliquer cette logique. Avant cette
+  // extraction, onClose du PaymentModal appelait un `fetchGroupage()`
+  // inexistant (ReferenceError silencieux a la fermeture du modal).
+  const fetchGroupage = useCallback(async () => {
+    try {
+      const groupageRes = await api.get(`/groupages/${id}`);
+      setGroupage(groupageRes.data);
 
-        if (isAuthenticated) {
-          // Le detail de prix (comparateur) est reserve aux utilisateurs connectes,
-          // pour eviter que notre modele de pricing soit consultable librement par des tiers.
-          try {
-            const pricingRes = await api.get(`/groupages/${id}/pricing?quantity=1`);
-            setPricing(pricingRes.data);
-          } catch (e) {
-            console.error('Error fetching pricing:', e);
-          }
-
-          const [membersRes, messagesRes] = await Promise.all([
-            api.get(`/groupages/${id}/members`),
-            api.get(`/groupages/${id}/messages`)
-          ]);
-          setMembers(membersRes.data);
-          setMessages(messagesRes.data);
-
-          // Fetch documents if member
-          try {
-            const docsRes = await api.get(`/groupages/${id}/documents`);
-            setDocuments(docsRes.data);
-          } catch (e) {
-            // User is not a member, documents not accessible
-          }
+      if (isAuthenticated) {
+        // Le detail de prix (comparateur) est reserve aux utilisateurs connectes,
+        // pour eviter que notre modele de pricing soit consultable librement par des tiers.
+        try {
+          const pricingRes = await api.get(`/groupages/${id}/pricing?quantity=1`);
+          setPricing(pricingRes.data);
+        } catch (e) {
+          console.error('Error fetching pricing:', e);
         }
-      } catch (error) {
-        console.error('Error fetching groupage:', error);
-        toast.error(t('common.error'));
-      } finally {
-        setLoading(false);
-      }
-    };
 
-    fetchData();
+        const [membersRes, messagesRes] = await Promise.all([
+          api.get(`/groupages/${id}/members`),
+          api.get(`/groupages/${id}/messages`)
+        ]);
+        setMembers(membersRes.data);
+        setMessages(messagesRes.data);
+
+        // Fetch documents if member
+        try {
+          const docsRes = await api.get(`/groupages/${id}/documents`);
+          setDocuments(docsRes.data);
+        } catch (e) {
+          // User is not a member, documents not accessible
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching groupage:', error);
+      toast.error(t('common.error'));
+    } finally {
+      setLoading(false);
+    }
   }, [id, isAuthenticated, t]);
+
+  useEffect(() => {
+    fetchGroupage();
+  }, [fetchGroupage]);
 
   // Update pricing when quantity changes (utilisateurs connectes uniquement)
   useEffect(() => {
@@ -176,23 +189,37 @@ const GroupageDetailPage = () => {
     }
   };
 
-  const handleJoinGroupage = async () => {
+  const handleJoinGroupage = async (acceptOverage = false) => {
     setJoining(true);
     try {
       await api.post(`/groupages/${id}/join`, {
         quantity,
         pickup_city: pickupCity || null,
-        accept_pickup: acceptPickup
+        accept_pickup: acceptPickup,
+        accept_overage: acceptOverage,
       });
       toast.success(i18n.language === 'fr' ? 'Groupage rejoint!' : 'Joined groupage!');
       setShowJoinConfirm(false);
+      setOverageConfirm(null);
 
       // On ne redirige plus directement vers la carte bancaire : la plupart des
       // acheteurs paient en mobile money. Le choix du moyen s'affiche d'abord.
       setShowPayment('caution');
     } catch (error) {
-      console.error('Join error:', error);
-      toast.error(getErrorMessage(error, t('common.error')));
+      // La quantite demandee depasse la quantite CIBLE du groupage : au lieu
+      // d'un toast d'erreur, on propose le supplement via une lightbox.
+      const detail = error.response?.data?.detail;
+      if (error.response?.status === 409 && detail?.code === 'overage_confirmation_required') {
+        setOverageConfirm({
+          remaining: detail.remaining,
+          requested: detail.requested,
+          feeFcfa: detail.overage_fee_fcfa,
+          onConfirm: () => handleJoinGroupage(true),
+        });
+      } else {
+        console.error('Join error:', error);
+        toast.error(getErrorMessage(error, t('common.error')));
+      }
     } finally {
       setJoining(false);
     }
@@ -383,18 +410,25 @@ const GroupageDetailPage = () => {
                       value={quantity}
                       onChange={setQuantity}
                       min={1}
-                      max={remainingQuantity}
                       inputClassName="flex-1 min-w-0"
                       className="w-full"
                       data-testid="quantity-input"
                     />
-                    <p className="text-[11px] text-[#71717A] mt-1">
-                      {i18n.language === 'fr'
-                        ? `${remainingQuantity} unité${remainingQuantity > 1 ? 's' : ''} encore disponible${remainingQuantity > 1 ? 's' : ''}`
-                        : `${remainingQuantity} unit${remainingQuantity > 1 ? 's' : ''} still available`}
-                    </p>
+                    {quantity > remainingQuantity ? (
+                      <p className="text-[11px] text-[#F97316] mt-1">
+                        {i18n.language === 'fr'
+                          ? `Dépasse la quantité cible du groupage (${remainingQuantity} restante${remainingQuantity > 1 ? 's' : ''}) : un supplément de ${new Intl.NumberFormat('fr-FR').format(OVERAGE_FEE_FCFA_DISPLAY)} FCFA s'appliquera.`
+                          : `Exceeds the groupage's target quantity (${remainingQuantity} left): a ${new Intl.NumberFormat('fr-FR').format(OVERAGE_FEE_FCFA_DISPLAY)} FCFA surcharge will apply.`}
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-[#71717A] mt-1">
+                        {i18n.language === 'fr'
+                          ? `${remainingQuantity} unité${remainingQuantity > 1 ? 's' : ''} encore disponible${remainingQuantity > 1 ? 's' : ''}`
+                          : `${remainingQuantity} unit${remainingQuantity > 1 ? 's' : ''} still available`}
+                      </p>
+                    )}
                   </div>
-                  
+
                   {pricing && (
                     <div className="bg-[#D4AF37]/10 border border-[#D4AF37]/20 rounded-lg p-3 mb-4">
                       <p className="text-sm text-[#A1A1AA] mb-1">
@@ -470,11 +504,34 @@ const GroupageDetailPage = () => {
                       {i18n.language === 'fr' ? 'Payer le solde' : 'Pay the balance'}
                     </button>
                   )}
-                  {myMembership?.caution_paid && myMembership?.solde_paid && (
+                  {/* Supplement d'une augmentation de quantite deja validee mais pas
+                      encore reglee : distinct du cycle caution/solde normal. */}
+                  {myMembership?.pending_addition_fcfa > 0 && !myMembership?.addition_paid && (
+                    <button
+                      onClick={() => setShowPayment('addition')}
+                      className="w-full btn-gold py-2 rounded-md font-medium flex items-center justify-center gap-2 mb-2"
+                      data-testid="pay-addition-btn"
+                    >
+                      <CreditCard className="w-4 h-4" />
+                      {i18n.language === 'fr' ? 'Payer le supplément' : 'Pay the surcharge'}
+                    </button>
+                  )}
+
+                  {myMembership?.caution_paid && myMembership?.solde_paid &&
+                   !(myMembership?.pending_addition_fcfa > 0 && !myMembership?.addition_paid) && (
                     <p className="text-xs text-[#22C55E] mb-2">
                       {i18n.language === 'fr' ? 'Votre paiement est complet.' : 'Your payment is complete.'}
                     </p>
                   )}
+
+                  <button
+                    onClick={() => setShowIncreaseQuantity(true)}
+                    className="w-full btn-outline py-2 rounded-md font-medium flex items-center justify-center gap-2 mb-2"
+                    data-testid="increase-quantity-btn"
+                  >
+                    <Plus className="w-4 h-4" />
+                    {i18n.language === 'fr' ? 'Ajouter de la quantité' : 'Add quantity'}
+                  </button>
 
                   <button
                     onClick={handleInviteAssociates}
@@ -1052,6 +1109,34 @@ const GroupageDetailPage = () => {
             onClose={() => { setShowPayment(null); fetchGroupage(); }}
           />
         )}
+
+        {overageConfirm && (
+          <OverageConfirmModal
+            {...overageConfirm}
+            fr={i18n.language === 'fr'}
+            onCancel={() => setOverageConfirm(null)}
+          />
+        )}
+
+        {showIncreaseQuantity && (
+          <IncreaseQuantityModal
+            groupageId={id}
+            fr={i18n.language === 'fr'}
+            onClose={() => setShowIncreaseQuantity(false)}
+            onOverage={(detail, retry) => setOverageConfirm({
+              remaining: detail.remaining,
+              requested: detail.requested,
+              feeFcfa: detail.overage_fee_fcfa,
+              onConfirm: retry,
+            })}
+            onSuccess={(pendingAdditionFcfa) => {
+              setShowIncreaseQuantity(false);
+              setOverageConfirm(null);
+              fetchGroupage();
+              if (pendingAdditionFcfa > 0) setShowPayment('addition');
+            }}
+          />
+        )}
       </div>
     </Layout>
   );
@@ -1374,11 +1459,13 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
           {fr ? 'Payer' : 'Pay'}{montant ? ` · ${montant}` : ''}
         </h3>
         <p className="text-sm text-[#A1A1AA] mb-5">
-          {paymentType !== 'caution'
-            ? (fr ? 'Le solde de votre commande.' : 'The balance of your order.')
-            : hasCaution
-              ? (fr ? 'Votre caution pour rejoindre le groupage.' : 'Your deposit to join the groupage.')
-              : (fr ? 'Votre part dans ce groupage, en une seule fois.' : 'Your share in this groupage, in a single payment.')}
+          {paymentType === 'addition'
+            ? (fr ? 'Le supplément pour votre quantité ajoutée.' : 'The surcharge for your added quantity.')
+            : paymentType !== 'caution'
+              ? (fr ? 'Le solde de votre commande.' : 'The balance of your order.')
+              : hasCaution
+                ? (fr ? 'Votre caution pour rejoindre le groupage.' : 'Your deposit to join the groupage.')
+                : (fr ? 'Votre part dans ce groupage, en une seule fois.' : 'Your share in this groupage, in a single payment.')}
         </p>
 
         {erreur && (
@@ -1490,6 +1577,111 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
         <button onClick={onClose} className="btn-outline w-full px-4 py-2 rounded-md mt-4">
           {etape === 'succes' ? (fr ? 'Continuer' : 'Continue') : (fr ? 'Fermer' : 'Close')}
         </button>
+      </div>
+    </div>
+  );
+};
+
+// Lightbox de confirmation du supplement de depassement (quantite CIBLE du
+// groupage franchie), partagee entre l'adhesion et l'augmentation d'un
+// membre existant : les deux ajoutent des unites au meme total reserve.
+const OverageConfirmModal = ({ remaining, requested, feeFcfa, onConfirm, onCancel, fr }) => {
+  const fmt = (n) => new Intl.NumberFormat('fr-FR').format(n);
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+      <div className="bg-[#141414] border border-[#F97316]/40 rounded-lg p-6 w-full max-w-md">
+        <h3 className="font-['Bebas_Neue'] text-2xl mb-1 text-[#F97316]">
+          {fr ? 'Dépassement de la quantité cible' : 'Target quantity exceeded'}
+        </h3>
+        <p className="text-sm text-[#A1A1AA] mb-4">
+          {fr
+            ? `Il ne reste que ${remaining} unité${remaining > 1 ? 's' : ''} dans la quantité cible de ce groupage, mais vous en demandez ${requested}.`
+            : `Only ${remaining} unit${remaining > 1 ? 's' : ''} remain in this groupage's target quantity, but you're requesting ${requested}.`}
+        </p>
+        <div className="bg-[#F97316]/10 border border-[#F97316]/20 rounded-md p-3 mb-5">
+          <p className="text-sm">
+            {fr
+              ? `Un supplément de ${fmt(feeFcfa)} FCFA s'appliquera pour couvrir ce dépassement.`
+              : `A ${fmt(feeFcfa)} FCFA surcharge will apply to cover this overage.`}
+          </p>
+        </div>
+        <div className="flex gap-3">
+          <button onClick={onConfirm} className="flex-1 btn-gold py-2 rounded-md font-medium" data-testid="confirm-overage-btn">
+            {fr ? 'Confirmer et continuer' : 'Confirm and continue'}
+          </button>
+          <button onClick={onCancel} className="flex-1 btn-outline py-2 rounded-md font-medium">
+            {fr ? 'Annuler' : 'Cancel'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Un membre DEJA present augmente sa part. Meme mecanique de depassement que
+// l'adhesion (voir OverageConfirmModal), geree via le callback onOverage.
+const IncreaseQuantityModal = ({ groupageId, fr, onClose, onOverage, onSuccess }) => {
+  const [additionalQuantity, setAdditionalQuantity] = useState(1);
+  const [envoi, setEnvoi] = useState(false);
+  const [erreur, setErreur] = useState(null);
+
+  const submit = async (acceptOverage = false) => {
+    setEnvoi(true);
+    setErreur(null);
+    try {
+      const res = await api.post(`/groupages/${groupageId}/increase-quantity`, {
+        additional_quantity: additionalQuantity,
+        accept_overage: acceptOverage,
+      });
+      onSuccess(res.data.pending_addition_fcfa);
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      if (error.response?.status === 409 && detail?.code === 'overage_confirmation_required') {
+        onOverage(detail, () => submit(true));
+      } else {
+        setErreur(getErrorMessage(error, fr ? 'Erreur' : 'Error'));
+      }
+    } finally {
+      setEnvoi(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+      <div className="bg-[#141414] border border-[#2A2A2A] rounded-lg p-6 w-full max-w-md">
+        <h3 className="font-['Bebas_Neue'] text-2xl mb-1">
+          {fr ? 'Ajouter de la quantité' : 'Add quantity'}
+        </h3>
+        <p className="text-sm text-[#A1A1AA] mb-5">
+          {fr
+            ? 'Combien d\'unités supplémentaires souhaitez-vous ajouter à votre commande ?'
+            : 'How many extra units would you like to add to your order?'}
+        </p>
+
+        {erreur && (
+          <div className="bg-[#EF4444]/10 border border-[#EF4444]/30 rounded-md p-3 text-sm text-[#EF4444] mb-4">
+            {erreur}
+          </div>
+        )}
+
+        <div className="mb-5 flex justify-center">
+          <QuantityInput value={additionalQuantity} onChange={setAdditionalQuantity} min={1} />
+        </div>
+
+        <div className="flex gap-3">
+          <button
+            onClick={() => submit(false)}
+            disabled={envoi}
+            className="flex-1 btn-gold py-2 rounded-md font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+            data-testid="submit-increase-quantity"
+          >
+            {envoi ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+            {fr ? 'Continuer' : 'Continue'}
+          </button>
+          <button onClick={onClose} className="flex-1 btn-outline py-2 rounded-md font-medium">
+            {fr ? 'Annuler' : 'Cancel'}
+          </button>
+        </div>
       </div>
     </div>
   );
