@@ -1308,11 +1308,23 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
     // survient apres un await (ils ne le considerent plus comme declenche
     // par l'utilisateur). On ouvre donc un onglet vide tout de suite, et on
     // le redirige une fois l'URL Tara connue.
-    const onglet = window.open('', '_blank', 'noopener,noreferrer');
+    //
+    // IMPORTANT : ni 'noopener' ni 'noreferrer' ici. L'un comme l'autre
+    // empechent le navigateur de nous rendre une reference a la fenetre
+    // ouverte (window.open renvoie alors null), ce qui rendait la
+    // redirection impossible - l'onglet restait bloque sur about:blank.
+    // Compromis assume : Tara (une page de paiement de confiance, pas une
+    // URL arbitraire) pourrait techniquement lire window.opener, mais on a
+    // besoin de garder la main pour rediriger l'onglet une fois l'URL connue.
+    let onglet = null;
+    try {
+      onglet = window.open('', '_blank');
+    } catch { /* ouverture refusee par le navigateur : onglet reste null */ }
+
     try {
       const res = await api.post('/payments/tara/card', { groupage_id: groupageId, payment_type: paymentType });
       setPaiement(res.data);
-      if (onglet) {
+      if (onglet && !onglet.closed) {
         onglet.location.href = res.data.card_link;
       } else {
         // Popup bloque malgre tout (bloqueur agressif) : on propose un lien
@@ -1323,7 +1335,10 @@ const PaymentModal = ({ groupageId, paymentType, hasCaution, fr, onClose }) => {
       }
       setEtape('attente');
     } catch (error) {
-      if (onglet) onglet.close();
+      // La fermeture d'un onglet ouvert par script peut elle-meme echouer
+      // selon le navigateur : ne jamais laisser cet effet de bord planter
+      // tout le flux de paiement.
+      try { if (onglet && !onglet.closed) onglet.close(); } catch { /* tant pis */ }
       setErreur(error.response?.data?.detail || (fr ? 'Erreur' : 'Error'));
     } finally {
       setEnvoi(false);
